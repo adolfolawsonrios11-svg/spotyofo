@@ -1,0 +1,3 @@
+# SpotyOFO se sirve con Flask en el puerto 5050, no con Apache.
+# Bloquea todo acceso por Apache a esta carpeta.
+Require all denied
