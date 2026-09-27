@@ -51,33 +51,12 @@ sudo cp "$ROOT/deploy/spotyofo.service" /etc/systemd/system/spotyofo.service
 sudo systemctl daemon-reload
 sudo systemctl enable --now spotyofo
 sudo systemctl restart spotyofo
-curl -fsS http://127.0.0.1:5050/api/health
-echo
-
-sudo python3 - <<'PY'
-from pathlib import Path
-path = Path("/etc/cloudflared/config.yml")
-text = path.read_text(encoding="utf-8")
-backup = path.with_name("config.yml.bak.spotyofo")
-if not backup.exists():
-    backup.write_text(text, encoding="utf-8")
-block = "  - hostname: spotyofo.ofotech.cl\n    service: http://127.0.0.1:5050\n"
-if "spotyofo.ofotech.cl" not in text:
-    catch = "  - service: http_status:404\n"
-    if catch not in text:
-        raise SystemExit("No está el cierre 404 del túnel.")
-    text = text.replace(catch, block + catch, 1)
-    path.write_text(text, encoding="utf-8")
-    print("ingress-added")
-else:
-    print("ingress-exists")
-PY
-
-TUNNEL="$(sudo awk '/^tunnel:/{print $2; exit}' /etc/cloudflared/config.yml)"
-sudo cloudflared tunnel --config /etc/cloudflared/config.yml ingress validate
-if ! cloudflared tunnel route dns "$TUNNEL" "$HOST_NAME"; then
-  echo "No pude crear el DNS. Revisa cert.pem de cloudflared."
-  exit 1
-fi
-sudo systemctl restart cloudflared
-echo "SpotyOFO listo en https://${HOST_NAME}"
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  if curl -fsS http://127.0.0.1:5050/api/health; then
+    echo
+    break
+  fi
+  sleep 1
+done
+curl -fsS http://127.0.0.1:5050/api/health >/dev/null
+echo "SpotyOFO en https://${HOST_NAME} (túnel propio cloudflared-spotyofo, sin tocar el túnel compartido)"
