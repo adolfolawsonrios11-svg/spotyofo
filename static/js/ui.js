@@ -1,5 +1,5 @@
 import { api } from "./api.js?v=20260927b";
-import { EQ_FREQS, EQ_LABELS, EQ_PRESETS } from "./player.js?v=20260927b";
+import { EQ_FREQS, EQ_LABELS, EQ_PRESETS } from "./player.js?v=20260927d";
 
 const GENRES = {
   "Dream pop": ["#12343a", "#8ef0d0"],
@@ -876,11 +876,13 @@ export function createUI(player) {
         <div class="set-card">
           <h2>Motor de reproducción</h2>
           <div class="segmented" role="radiogroup" aria-label="Motor de reproducción">
+            <label><input type="radio" name="audio-engine" value="auto" ${cfg.engine === "auto" ? "checked" : ""}><span>Automático<small>${caps.mobile ? "Recomendado: sigue sonando con la pantalla apagada" : "Recomendado: Completo en este equipo"}</small></span></label>
             <label><input type="radio" name="audio-engine" value="webaudio" ${cfg.engine === "webaudio" ? "checked" : ""}><span>Completo<small>Ecualizador y efectos</small></span></label>
             <label><input type="radio" name="audio-engine" value="native" ${cfg.engine === "native" ? "checked" : ""}><span>Básico<small>Máxima compatibilidad</small></span></label>
           </div>
-          ${cfg.engine !== caps.engine ? `<p class="notice">El cambio de motor se aplica al recargar. <button type="button" class="btn solid small" data-audio="reload">Recargar ahora</button></p>` : ""}
-          ${fx ? "" : `<p class="notice">Motor básico activo: ecualizador, normalización y mono no están disponibles.</p>`}
+          ${caps.mobile && cfg.engine === "webaudio" ? `<p class="notice">En teléfonos, el motor Completo puede detenerse al apagar la pantalla o cambiar de app. Para escuchar en segundo plano usa Automático o Básico.</p>` : ""}
+          ${caps.pendingEngine !== caps.engine ? `<p class="notice">El cambio de motor se aplica al recargar. <button type="button" class="btn solid small" data-audio="reload">Recargar ahora</button></p>` : ""}
+          ${fx ? "" : `<p class="notice">${cfg.engine === "auto" ? "En este teléfono se usa el motor Básico para que la música siga con la pantalla apagada: ecualizador, normalización y mono no están disponibles." : "Motor básico activo: ecualizador, normalización y mono no están disponibles."}</p>`}
         </div>
 
         <div class="set-card">
@@ -1880,6 +1882,7 @@ export function createUI(player) {
     });
     document.getElementById("install-app").addEventListener("click", () => promptInstall());
     player.on("audio", syncAudioView);
+    player.on("notice", (message) => showToast(message));
     player.on("error", (error) => {
       if (error?.name === "NotAllowedError") showToast("Toca reproducir para empezar");
       else showToast(error?.message || "Error de reproducción");

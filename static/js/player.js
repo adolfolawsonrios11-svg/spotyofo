@@ -20,9 +20,18 @@ export const EQ_PRESETS = {
 
 const PREFS_KEY = "spotyofo-player";
 const AUDIO_KEY = "spotyofo-audio";
+// Teléfonos y tabletas: la salida directa del elemento <audio> es lo único que los sistemas
+// mantienen sonando con la pantalla apagada. El motor «Completo» (Web Audio) queda opcional.
+const UA = typeof navigator === "object" ? navigator.userAgent || "" : "";
+export const IS_IOS = /iPad|iPhone|iPod/.test(UA) || (typeof navigator === "object" && navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+export const IS_MOBILE = IS_IOS || /Android|Mobile/i.test(UA) || Boolean(typeof navigator === "object" && navigator.userAgentData?.mobile);
+export function resolveEngine(mode) {
+  if (mode === "webaudio" || mode === "native") return mode;
+  return IS_MOBILE ? "native" : "webaudio";
+}
 const AUDIO_DEFAULTS = {
-  version: 2,
-  engine: "webaudio",
+  version: 3,
+  engine: "auto",
   eqOn: true,
   eq: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
   preamp: 0,
@@ -74,7 +83,9 @@ function cleanBands(list) {
 function sanitize(raw) {
   const cfg = { ...AUDIO_DEFAULTS, eq: AUDIO_DEFAULTS.eq.slice(), custom: {} };
   if (!raw || typeof raw !== "object") return cfg;
-  cfg.engine = raw.engine === "native" ? "native" : "webaudio";
+  // Hasta la versión 2 el motor se guardaba solo, sin que la persona lo eligiera: pasa a «auto».
+  if (raw.version >= 3) cfg.engine = ["auto", "webaudio", "native"].includes(raw.engine) ? raw.engine : "auto";
+  else cfg.engine = raw.engine === "native" ? "native" : "auto";
   cfg.eqOn = raw.eqOn !== false;
   cfg.eq = cleanBands(raw.eq);
   cfg.preamp = round1(clamp(raw.preamp, -12, 12, 0));
@@ -168,7 +179,7 @@ export function createPlayer() {
     orderBefore: null,
   };
   const cfg = loadAudio();
-  const engine = cfg.engine;
+  const engine = resolveEngine(cfg.engine);
   const volumeControl = canSetVolume();
   const decks = [makeDeck(0), makeDeck(1)];
   let active = 0;
@@ -185,6 +196,22 @@ export function createPlayer() {
   let sessionReady = false;
   let lastPosition = 0;
   const freq = new Uint8Array(128);
+  // Recuperación: la música debe seguir aunque se corte la red o el sistema suspenda el audio.
+  const rec = {
+    want: false, // la persona quiere que suene (solo cambia con play/pausa explícitos)
+    retries: 0,
+    failed: 0,
+    lastTime: 0,
+    lastProgressAt: 0,
+    internalAt: 0,
+    stallTimer: 0,
+    retryTimer: 0,
+    recovering: false,
+    retryFrom: 0,
+  };
+  const markInternal = () => {
+    rec.internalAt = Date.now();
+  };
 
   function emit(name, detail) {
     (listeners.get(name) || []).forEach((fn) => fn(detail));
@@ -215,6 +242,7 @@ export function createPlayer() {
     const deck = { n, el, source: null, gain: null, track: null, loadedUrl: "", unlocked: false, unlocking: false, level: 1 };
     el.addEventListener("play", () => {
       if (deck !== activeDeck() || deck.unlocking) return;
+      rec.want = true; // también cuando se reanuda desde la pantalla de bloqueo o los auriculares
       state.playing = true;
       updatePlaybackState();
       emit("state", snapshot());
@@ -223,15 +251,28 @@ export function createPlayer() {
     });
     el.addEventListener("pause", () => {
       if (deck !== activeDeck() || deck.unlocking) return;
+      // Pausa que no pedimos nosotros (sistema, auriculares, llamada): se respeta, salvo que venga
+      // de un error, del final de la pista o de un cambio interno de archivo.
+      if (!el.ended && !el.error && !rec.recovering && Date.now() - rec.internalAt > 1500) rec.want = false;
+      if (rec.recovering || (rec.want && (el.error || el.ended))) return;
       state.playing = false;
       updatePlaybackState();
       stopViz();
       stopTick();
       emit("state", snapshot());
     });
+    el.addEventListener("playing", () => {
+      if (deck !== activeDeck() || deck.unlocking) return;
+      clearStall();
+      rec.recovering = false;
+      rec.lastProgressAt = Date.now();
+      updatePlaybackState();
+      updatePosition();
+    });
     el.addEventListener("timeupdate", () => {
       if (deck !== activeDeck() || !deck.loadedUrl) return;
       emit("time", { current: el.currentTime, duration: el.duration || 0 });
+      noteProgress(el);
       const now = Date.now();
       if (now - lastPosition > 1000) {
         lastPosition = now;
@@ -239,15 +280,17 @@ export function createPlayer() {
       }
       onTick();
     });
+    ["waiting", "stalled"].forEach((type) => el.addEventListener(type, () => {
+      if (deck === activeDeck() && deck.loadedUrl && rec.want) armStall();
+    }));
+    ["loadedmetadata", "durationchange", "ratechange", "seeked"].forEach((type) => el.addEventListener(type, () => {
+      if (deck === activeDeck()) updatePosition();
+    }));
     el.addEventListener("ended", () => {
       if (deck === activeDeck() && deck.loadedUrl) onEnded();
     });
     el.addEventListener("error", () => {
-      if (deck === activeDeck() && deck.loadedUrl && el.error) {
-        state.playing = false;
-        emit("error", new Error("No se pudo reproducir este archivo."));
-        emit("state", snapshot());
-      }
+      if (deck === activeDeck() && deck.loadedUrl && el.error && !deck.unlocking) recover("error");
     });
     return deck;
   }
@@ -358,8 +401,10 @@ export function createPlayer() {
       deck.gain.connect(input);
       deck.el.volume = 1;
     });
+    // Si el sistema suspende o interrumpe el audio (llamada, pantalla apagada), se reanuda en
+    // cuanto se pueda; si falla en segundo plano, se reintenta al volver o con el siguiente gesto.
     ctx.addEventListener?.("statechange", () => {
-      if (ctx.state !== "running" && state.playing && !document.hidden) ctx.resume().catch(() => {});
+      if (ctx.state !== "running" && rec.want) resumeContext();
     });
     applyEqNodes();
     applyMono();
@@ -369,7 +414,148 @@ export function createPlayer() {
   }
 
   function resumeContext() {
-    if (ctx && ctx.state !== "running") ctx.resume().catch(() => {});
+    if (ctx && ctx.state !== "running" && ctx.state !== "closed") ctx.resume().catch(() => {});
+  }
+
+  // ---------- recuperación de cortes ----------
+
+  function noteProgress(el) {
+    if (rec.recovering) return; // mientras se recarga, currentTime vuelve a 0 un instante
+    const t = el.currentTime;
+    if (Math.abs(t - rec.lastTime) > 0.05) {
+      rec.lastTime = t;
+      rec.lastProgressAt = Date.now();
+      if (rec.retries && t > (rec.retryFrom || 0) + 5) rec.retries = 0;
+      if (rec.failed && t > 5) rec.failed = 0;
+    }
+  }
+
+  function clearStall() {
+    if (rec.stallTimer) clearTimeout(rec.stallTimer);
+    rec.stallTimer = 0;
+  }
+
+  function armStall() {
+    if (rec.stallTimer) return;
+    rec.stallTimer = setTimeout(checkStall, 12000);
+  }
+
+  function checkStall() {
+    rec.stallTimer = 0;
+    const el = activeDeck().el;
+    if (!rec.want || !activeDeck().loadedUrl || el.paused && !el.error && !rec.recovering && !state.playing) return;
+    if (Date.now() - rec.lastProgressAt < 10000) {
+      if (el.readyState < 3) armStall();
+      return;
+    }
+    recover("stall");
+  }
+
+  // Vigilancia: se llama con timeupdate, con el temporizador y al volver a la pestaña.
+  function watchdog() {
+    if (!rec.want || !current()) return;
+    resumeContext();
+    const deck = activeDeck();
+    const el = deck.el;
+    if (!deck.loadedUrl || fade) return;
+    const stuckFor = Date.now() - rec.lastProgressAt;
+    const duration = el.duration;
+    // Algunos móviles no disparan «ended» si el archivo termina un poco antes de lo anunciado.
+    if (!el.paused && Number.isFinite(duration) && duration > 0 && el.currentTime >= duration - 0.4 && stuckFor > 3000) {
+      onEnded();
+      return;
+    }
+    if (el.error) {
+      if (!rec.retryTimer) recover("error");
+      return;
+    }
+    if (!el.paused && el.readyState < 3 && stuckFor > 15000 && !rec.retryTimer) recover("stall");
+  }
+
+  // Espera entre reintentos: cortes cortos se retoman en 1 s; cortes largos, hasta ~1 minuto.
+  const RETRY_DELAYS = [800, 2500, 5000, 10000, 20000, 30000];
+
+  function recover(reason) {
+    const deck = activeDeck();
+    const track = current();
+    if (!track || !deck.loadedUrl) return;
+    if (rec.retryTimer) return;
+    clearStall();
+    const position = rec.lastTime || deck.el.currentTime || 0;
+    // Sin red: no se gastan reintentos; se retoma apenas vuelva la conexión (evento «online»).
+    if (typeof navigator === "object" && navigator.onLine === false) {
+      if (!rec.recovering) emit("notice", "Sin conexión: la música seguirá cuando vuelva la red.");
+      rec.recovering = true;
+      rec.retryFrom = position;
+      rec.retryTimer = setTimeout(() => {
+        rec.retryTimer = 0;
+        if (rec.want && activeDeck() === deck && current() === track) recover(reason);
+        else rec.recovering = false;
+      }, 15000);
+      return;
+    }
+    // Archivo dañado (no se puede decodificar): no tiene sentido insistir mucho.
+    const code = deck.el.error ? deck.el.error.code : 0;
+    const maxRetries = code === 3 ? 1 : code === 4 ? 3 : RETRY_DELAYS.length;
+    if (rec.retries >= maxRetries) {
+      rec.retries = 0;
+      rec.failed += 1;
+      rec.recovering = false;
+      if (rec.failed >= 3 || (upcomingIndex() === null && !state.autoplay)) {
+        rec.want = false;
+        state.playing = false;
+        updatePlaybackState();
+        emit("error", new Error(`No se pudo cargar «${track.title}». Revisa la conexión y vuelve a tocar reproducir.`));
+        emit("state", snapshot());
+        return;
+      }
+      emit("notice", `No se pudo cargar «${track.title}»; paso a la siguiente.`);
+      next(true, { skipBroken: true });
+      return;
+    }
+    rec.retries += 1;
+    rec.recovering = true;
+    rec.retryFrom = position;
+    if (rec.retries === 1) emit("notice", reason === "stall" ? "Conexión lenta: retomando la canción…" : "Se cortó la conexión: retomando la canción…");
+    rec.retryTimer = setTimeout(() => {
+      rec.retryTimer = 0;
+      if (!rec.want || activeDeck() !== deck || current() !== track) {
+        rec.recovering = false;
+        return;
+      }
+      reloadAt(deck, position);
+    }, RETRY_DELAYS[rec.retries - 1]);
+  }
+
+  function reloadAt(deck, position) {
+    const el = deck.el;
+    markInternal();
+    const url = deck.loadedUrl;
+    el.src = url;
+    el.load();
+    applySpeedTo(deck);
+    const seek = () => {
+      if (position > 0 && Number.isFinite(el.duration)) {
+        try {
+          el.currentTime = Math.min(position, Math.max(0, el.duration - 1));
+        } catch {
+          /* aún sin datos */
+        }
+      }
+    };
+    el.addEventListener("loadedmetadata", seek, { once: true });
+    resumeContext();
+    rec.lastProgressAt = Date.now();
+    el.play().catch((error) => {
+      if (error.name === "NotAllowedError") {
+        rec.recovering = false;
+        rec.want = false;
+        state.playing = false;
+        emit("error", error);
+        emit("state", snapshot());
+      }
+    });
+    armStall();
   }
 
   function setParam(param, value) {
@@ -505,6 +691,12 @@ export function createPlayer() {
     if (!raf && analyser) loop();
   }
 
+  // En segundo plano no se dibuja (ahorra batería); el audio no depende del dibujo.
+  function stopVizLoopOnly() {
+    if (raf) cancelAnimationFrame(raf);
+    raf = 0;
+  }
+
   function stopViz() {
     if (raf) cancelAnimationFrame(raf);
     raf = 0;
@@ -598,14 +790,18 @@ export function createPlayer() {
   }
 
   function onTick() {
+    watchdog();
     const deck = activeDeck();
     const el = deck.el;
     const duration = el.duration;
     if (!Number.isFinite(duration) || duration <= 0 || el.paused || fade || state.repeat === "one") return;
     const remaining = (duration - el.currentTime) / (el.playbackRate || 1);
     if (!prep && remaining <= Math.max(cfg.crossfade + 10, 25)) prepareNext();
+    // Con la pantalla apagada no se arranca un segundo elemento: el cambio lo hace «ended»
+    // en el mismo elemento, que es el que el sistema deja seguir sonando.
     if (
       cfg.crossfade > 0
+      && !document.hidden
       && crossfadeSupported()
       && remaining <= cfg.crossfade + 0.05
       && duration > cfg.crossfade * 2 + 2
@@ -617,7 +813,7 @@ export function createPlayer() {
   }
 
   function startTick() {
-    if (!tickTimer) tickTimer = setInterval(onTick, 250);
+    if (!tickTimer) tickTimer = setInterval(onTick, 1000);
   }
 
   function stopTick() {
@@ -629,6 +825,7 @@ export function createPlayer() {
     const from = activeDeck();
     const to = idleDeck();
     const token = ++playToken;
+    markInternal();
     fade = { from, to, timer: 0, token, started: false };
     deckLevel(to, 0);
     applySpeedTo(to);
@@ -662,6 +859,7 @@ export function createPlayer() {
     if (!fade) return;
     const { from, to, timer, started } = fade;
     fade = null;
+    markInternal();
     clearTimeout(timer);
     if (!started) {
       to.el.pause();
@@ -681,8 +879,12 @@ export function createPlayer() {
       return;
     }
     const target = prepValid() ? prep.index : null;
-    if (target !== null && idleHas(prep.track)) {
+    if (target !== null && idleHas(prep.track) && !document.hidden) {
       swapTo(target);
+      return;
+    }
+    if (target !== null) {
+      playIndex(target, { allowSwap: false });
       return;
     }
     next(true);
@@ -692,6 +894,8 @@ export function createPlayer() {
     const from = activeDeck();
     const to = idleDeck();
     const token = ++playToken;
+    markInternal();
+    rec.want = true;
     deckLevel(to, 1);
     applySpeedTo(to);
     try {
@@ -719,6 +923,10 @@ export function createPlayer() {
     const deck = activeDeck();
     deck.unlocked = true;
     state.playing = true;
+    rec.want = true;
+    rec.recovering = false;
+    rec.lastTime = deck.el.currentTime || 0;
+    rec.lastProgressAt = Date.now();
     const key = `${track.id}|${track.audio_url}`;
     if (startedKey !== key) {
       startedKey = key;
@@ -735,12 +943,22 @@ export function createPlayer() {
     if (!state.queue.length) return Promise.resolve();
     const token = ++playToken;
     finishFade();
+    markInternal();
+    rec.want = true;
+    rec.retries = 0;
+    rec.lastTime = 0;
+    rec.lastProgressAt = Date.now();
+    clearStall();
+    if (rec.retryTimer) clearTimeout(rec.retryTimer);
+    rec.retryTimer = 0;
+    rec.recovering = false;
     state.index = ((index % state.queue.length) + state.queue.length) % state.queue.length;
     const track = current();
     ensureGraph();
     resumeContext();
     let deck = activeDeck();
-    if (options.allowSwap !== false && idleHas(track)) {
+    // En segundo plano se reutiliza el mismo elemento: cambiar a otro suele estar bloqueado.
+    if (options.allowSwap !== false && !document.hidden && idleHas(track)) {
       deck.el.pause();
       active = 1 - active;
       deck = activeDeck();
@@ -755,7 +973,7 @@ export function createPlayer() {
     }
     const other = idleDeck();
     if (!other.el.paused && !other.unlocking) other.el.pause();
-    unlockIdle();
+    if (!document.hidden) unlockIdle();
     deckLevel(deck, 1);
     applySpeedTo(deck);
     applyNativeVolume(deck);
@@ -767,9 +985,15 @@ export function createPlayer() {
       })
       .catch((error) => {
         if (token !== playToken || error.name === "AbortError") return;
-        state.playing = false;
-        emit("error", error);
-        emit("state", snapshot());
+        if (error.name === "NotAllowedError" || error.name === "NotSupportedError") {
+          if (error.name === "NotSupportedError" && deck.el.error) return; // lo atiende recover()
+          rec.want = false;
+          state.playing = false;
+          emit("error", error);
+          emit("state", snapshot());
+          return;
+        }
+        recover("error");
       });
   }
 
@@ -907,17 +1131,35 @@ export function createPlayer() {
     const deck = activeDeck();
     ensureGraph();
     resumeContext();
+    rec.want = true;
+    rec.lastProgressAt = Date.now();
     if (!deck.loadedUrl) {
       playIndex(state.index);
       return;
     }
-    unlockIdle();
+    if (deck.el.error) {
+      rec.retries = 0;
+      recover("error");
+      return;
+    }
+    if (!document.hidden) unlockIdle();
     deck.el.play().catch((error) => {
-      if (error.name !== "AbortError") emit("error", error);
+      if (error.name === "AbortError") return;
+      if (error.name === "NotAllowedError") {
+        rec.want = false;
+        emit("error", error);
+        return;
+      }
+      recover("error");
     });
   }
 
   function pause() {
+    rec.want = false;
+    clearStall();
+    if (rec.retryTimer) clearTimeout(rec.retryTimer);
+    rec.retryTimer = 0;
+    rec.recovering = false;
     finishFade();
     activeDeck().el.pause();
   }
@@ -928,9 +1170,9 @@ export function createPlayer() {
     else pause();
   }
 
-  function next(fromEnd = false) {
+  function next(fromEnd = false, options = {}) {
     if (!state.queue.length) return;
-    if (fromEnd && state.repeat === "one") {
+    if (fromEnd && state.repeat === "one" && !options.skipBroken) {
       activeDeck().el.currentTime = 0;
       resume();
       return;
@@ -961,6 +1203,7 @@ export function createPlayer() {
   async function continueRelated() {
     const track = current();
     const stop = () => {
+      rec.want = false;
       state.playing = false;
       stopViz();
       stopTick();
@@ -1197,6 +1440,11 @@ export function createPlayer() {
     const probe = document.createElement("audio");
     return {
       engine,
+      engineMode: cfg.engine,
+      pendingEngine: resolveEngine(cfg.engine),
+      autoEngine: resolveEngine("auto"),
+      mobile: IS_MOBILE,
+      ios: IS_IOS,
       webaudio: engine === "webaudio" && Boolean(window.AudioContext || window.webkitAudioContext),
       volumeControl: engine === "webaudio" || volumeControl,
       crossfade: engine === "webaudio" || volumeControl,
@@ -1242,20 +1490,39 @@ export function createPlayer() {
   }
 
   function setEngine(name) {
-    cfg.engine = name === "native" ? "native" : "webaudio";
+    cfg.engine = ["auto", "webaudio", "native"].includes(name) ? name : "auto";
     saveAudio();
     emit("audio", audioSettings());
   }
 
   // Safari/iOS suspende el AudioContext: se reanuda con el siguiente gesto o al volver a la pestaña.
   const wake = () => {
-    if (ctx && ctx.state !== "running" && state.playing) ctx.resume().catch(() => {});
+    if (rec.want || state.playing) resumeContext();
   };
   ["pointerdown", "touchend", "keydown"].forEach((type) => document.addEventListener(type, wake, { passive: true }));
   document.addEventListener("visibilitychange", () => {
+    wake();
     if (!document.hidden) {
-      wake();
+      watchdog();
       if (state.playing) startViz();
+    } else {
+      stopVizLoopOnly();
+    }
+  });
+  window.addEventListener("pageshow", () => {
+    wake();
+    watchdog();
+  });
+  document.addEventListener("resume", () => {
+    wake();
+    watchdog();
+  });
+  window.addEventListener("online", () => {
+    const el = activeDeck().el;
+    if (rec.want && activeDeck().loadedUrl && (el.error || el.readyState < 3)) {
+      if (rec.retryTimer) clearTimeout(rec.retryTimer);
+      rec.retryTimer = 0;
+      recover("stall");
     }
   });
 
@@ -1308,6 +1575,23 @@ export function createPlayer() {
     requestOutputAccess,
     setOutput,
     setEngine,
+    health() {
+      const deck = activeDeck();
+      return {
+        engine,
+        want: rec.want,
+        playing: state.playing,
+        paused: deck.el.paused,
+        ctx: ctx ? ctx.state : null,
+        retries: rec.retries,
+        failed: rec.failed,
+        recovering: rec.recovering,
+        readyState: deck.el.readyState,
+        time: deck.el.currentTime,
+        index: state.index,
+        deck: deck.n,
+      };
+    },
     position() {
       const el = activeDeck().el;
       return { current: el.currentTime || 0, duration: el.duration || 0 };
