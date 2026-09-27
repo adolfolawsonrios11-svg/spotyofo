@@ -1,4 +1,5 @@
-import { api } from "./api.js";
+import { api } from "./api.js?v=20260927b";
+import { EQ_FREQS, EQ_LABELS, EQ_PRESETS } from "./player.js?v=20260927b";
 
 const GENRES = {
   "Dream pop": ["#12343a", "#8ef0d0"],
@@ -12,6 +13,24 @@ const GENRES = {
 const known = new Map();
 const UPLOAD_EXT = [".mp3", ".m4a", ".mp4", ".aac", ".flac", ".ogg", ".oga", ".opus", ".wav"];
 const UPLOAD_ACCEPT = `audio/*,${UPLOAD_EXT.join(",")}`;
+const UI_KEY = "spotyofo-ui";
+const PLAY_ICON = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l12-7z"/></svg>`;
+const PAUSE_ICON = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 5h4v14H7zM13 5h4v14h-4z"/></svg>`;
+const SHORTCUTS = [
+  ["Espacio", "Reproducir / pausar"],
+  ["← / →", "Retroceder / adelantar 5 s"],
+  ["Mayús + ← / →", "Pista anterior / siguiente"],
+  ["↑ / ↓", "Subir / bajar volumen"],
+  ["M", "Silenciar"],
+  ["S", "Aleatorio"],
+  ["R", "Repetir (lista, una, apagado)"],
+  ["L", "Me gusta en la pista actual"],
+  ["N / P", "Siguiente / anterior"],
+  ["F", "Abrir «Ahora suena»"],
+  ["/", "Buscar"],
+  ["?", "Ver estos atajos"],
+  ["Esc", "Cerrar ventanas y paneles"],
+];
 const TRASH_ICON = `<svg viewBox="0 0 24 24"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg>`;
 
 export function createUI(player) {
@@ -33,6 +52,15 @@ export function createUI(player) {
   let pendingLibrary = null;
   let menuPlaylistId = null;
   let uploading = false;
+  let nowSeeking = false;
+  let lastFocus = null;
+  let modalFocus = null;
+  let installPrompt = null;
+  let outputsLoaded = false;
+  const now = document.getElementById("now");
+  const appEl = document.getElementById("app");
+  const desktopQuery = window.matchMedia("(min-width: 1101px)");
+  const phoneQuery = window.matchMedia("(max-width: 700px)");
 
   function esc(value) {
     return String(value ?? "").replace(/[&<>"']/g, (char) => ({
@@ -89,7 +117,7 @@ export function createUI(player) {
     const activeId = current[0] === "playlist" ? current[1] : "";
     const likesOn = current[0] === "likes";
     side.innerHTML = `
-      <a class="side-item ${likesOn ? "is-active" : ""}" href="#/likes"><span class="dot heart">♡</span>Me gusta</a>
+      <a class="side-item ${likesOn ? "is-active" : ""}" href="#/likes"><span class="dot heart" aria-hidden="true">♡</span><span>Me gusta</span></a>
       ${mine.map((item) => sideItem(item, activeId)).join("")}
       ${editorial.length ? `<p class="side-label">Editorial</p>` : ""}
       ${editorial.map((item) => sideItem(item, activeId)).join("")}
@@ -107,7 +135,10 @@ export function createUI(player) {
     const name = parts()[0] || "home";
     const key = name === "likes" || name === "playlist" ? "library" : name;
     document.querySelectorAll(".nav-link").forEach((link) => {
-      link.classList.toggle("is-active", link.dataset.nav === (key || "home"));
+      const active = link.dataset.nav === (key || "home");
+      link.classList.toggle("is-active", active);
+      if (active) link.setAttribute("aria-current", "page");
+      else link.removeAttribute("aria-current");
     });
   }
 
@@ -116,6 +147,7 @@ export function createUI(player) {
     try {
       view.innerHTML = await builder();
       view.scrollTop = 0;
+      window.scrollTo(0, 0);
       markPlaying();
     } catch (error) {
       view.innerHTML = `<p class="empty">${esc(error.message)}</p>`;
@@ -581,7 +613,9 @@ export function createUI(player) {
     markNav();
     paintSide().catch(() => {});
     closeMenu();
+    closeSide();
     if (!name) return show(renderHome);
+    if (name === "audio") return show(renderAudio).then(afterAudio);
     if (name === "search") {
       const query = arg ? decodeURIComponent(parts().slice(1).join("/")) : "";
       if (document.activeElement !== searchInput) searchInput.value = query;
@@ -651,15 +685,32 @@ export function createUI(player) {
     const like = document.getElementById("p-like");
     document.body.classList.toggle("is-playing", snap.playing);
     const playBtn = document.getElementById("p-play");
-    playBtn.innerHTML = snap.playing
-      ? `<svg viewBox="0 0 24 24"><path d="M7 5h4v14H7zM13 5h4v14h-4z"/></svg>`
-      : `<svg viewBox="0 0 24 24"><path d="M8 5v14l12-7z"/></svg>`;
-    playBtn.setAttribute("aria-label", snap.playing ? "Pausar" : "Reproducir");
-    document.getElementById("p-shuffle").classList.toggle("is-on", snap.shuffle);
-    const repeatBtn = document.getElementById("p-repeat");
-    repeatBtn.classList.toggle("is-on", snap.repeat !== "off");
-    repeatBtn.dataset.mode = snap.repeat;
-    repeatBtn.setAttribute("aria-label", snap.repeat === "one" ? "Repetir una" : snap.repeat === "all" ? "Repetir lista" : "Repetir");
+    const playLabel = snap.playing ? "Pausar" : "Reproducir";
+    const repeatLabel = snap.repeat === "one" ? "Repetir una" : snap.repeat === "all" ? "Repetir lista" : "Repetir";
+    [playBtn, now.querySelector("[data-now='play']")].forEach((button) => {
+      if (!button) return;
+      const icon = snap.playing ? "pause" : "play";
+      if (button.dataset.icon !== icon) {
+        button.innerHTML = snap.playing ? PAUSE_ICON : PLAY_ICON;
+        button.dataset.icon = icon;
+      }
+      button.setAttribute("aria-label", playLabel);
+    });
+    [document.getElementById("p-shuffle"), now.querySelector("[data-now='shuffle']")].forEach((button) => {
+      button.classList.toggle("is-on", snap.shuffle);
+      button.setAttribute("aria-pressed", String(snap.shuffle));
+    });
+    [document.getElementById("p-repeat"), now.querySelector("[data-now='repeat']")].forEach((button) => {
+      button.classList.toggle("is-on", snap.repeat !== "off");
+      button.dataset.mode = snap.repeat;
+      button.setAttribute("aria-label", repeatLabel);
+      button.setAttribute("aria-pressed", String(snap.repeat !== "off"));
+    });
+    const muteBtn = document.getElementById("p-mute");
+    muteBtn.classList.toggle("is-on", snap.muted);
+    muteBtn.setAttribute("aria-pressed", String(snap.muted));
+    muteBtn.setAttribute("aria-label", snap.muted ? "Quitar silencio" : "Silenciar");
+    const nowLike = now.querySelector("[data-now='like']");
     const volume = document.getElementById("p-volume");
     volume.value = String(Math.round((snap.muted ? 0 : snap.volume) * 100));
     paintRange(volume);
@@ -668,6 +719,8 @@ export function createUI(player) {
       artist.textContent = "";
       cover.removeAttribute("src");
       like.disabled = true;
+      nowLike.disabled = true;
+      document.body.classList.remove("has-track");
       document.title = "SpotyOFO";
       return;
     }
@@ -675,8 +728,14 @@ export function createUI(player) {
     artist.textContent = track.artist;
     cover.src = track.cover_url;
     cover.alt = track.album;
+    document.body.classList.add("has-track");
     like.disabled = false;
-    like.classList.toggle("is-on", Boolean(track.liked));
+    nowLike.disabled = false;
+    [like, nowLike].forEach((button) => {
+      button.classList.toggle("is-on", Boolean(track.liked));
+      button.setAttribute("aria-pressed", String(Boolean(track.liked)));
+    });
+    document.getElementById("np-open").setAttribute("aria-label", `Abrir ahora suena: ${track.title}`);
     document.title = `${track.title} · ${track.artist} — SpotyOFO`;
     const nowTitle = document.getElementById("now-title");
     nowTitle.textContent = track.title;
@@ -690,18 +749,32 @@ export function createUI(player) {
   }
 
   function syncTime(time) {
-    if (seeking) return;
-    const seek = document.getElementById("p-seek");
-    const ratio = time.duration ? time.current / time.duration : 0;
-    seek.value = String(Math.round(ratio * 1000));
-    paintRange(seek);
-    document.getElementById("p-elapsed").textContent = fmt(time.current * 1000);
-    document.getElementById("p-duration").textContent = fmt((time.duration || 0) * 1000);
+    const ratio = time.duration ? Math.min(1, time.current / time.duration) : 0;
+    document.getElementById("p-mini-bar").style.transform = `scaleX(${ratio})`;
+    const elapsed = fmt(time.current * 1000);
+    const duration = fmt((time.duration || 0) * 1000);
+    if (!seeking) {
+      const seek = document.getElementById("p-seek");
+      seek.value = String(Math.round(ratio * 1000));
+      seek.setAttribute("aria-valuetext", `${elapsed} de ${duration}`);
+      paintRange(seek);
+      document.getElementById("p-elapsed").textContent = elapsed;
+      document.getElementById("p-duration").textContent = duration;
+    }
+    if (!nowSeeking && !now.hidden) {
+      const nowSeek = document.getElementById("now-seek");
+      nowSeek.value = String(Math.round(ratio * 1000));
+      nowSeek.setAttribute("aria-valuetext", `${elapsed} de ${duration}`);
+      paintRange(nowSeek);
+      document.getElementById("now-elapsed").textContent = elapsed;
+      document.getElementById("now-duration").textContent = duration;
+    }
   }
 
   function paintRange(input) {
+    const min = Number(input.min) || 0;
     const max = Number(input.max) || 100;
-    const pct = (Number(input.value) / max) * 100;
+    const pct = Math.max(0, Math.min(100, ((Number(input.value) - min) / (max - min || 1)) * 100));
     input.style.background = `linear-gradient(90deg, var(--aqua) ${pct}%, rgba(255,255,255,.16) ${pct}%)`;
   }
 
@@ -709,52 +782,556 @@ export function createUI(player) {
     drawerMode = drawer.hidden || drawerMode !== mode ? mode : null;
     if (!drawerMode) {
       drawer.hidden = true;
-      document.querySelector(".app").classList.remove("with-drawer");
+      appEl.classList.remove("with-drawer");
+      document.getElementById("p-queue").setAttribute("aria-expanded", "false");
       return;
     }
     drawer.hidden = false;
-    document.querySelector(".app").classList.add("with-drawer");
-    drawerTitle.textContent = mode === "queue" ? "Cola" : "Estudio";
-    if (mode === "queue") renderQueue(player.snapshot());
-    else renderStudio(player.snapshot());
+    appEl.classList.add("with-drawer");
+    document.getElementById("p-queue").setAttribute("aria-expanded", "true");
+    drawerTitle.textContent = "Cola";
+    renderQueue(player.snapshot());
+    document.getElementById("drawer-close").focus({ preventScroll: true });
   }
 
   function renderQueue(snap) {
+    const autoplay = `<label class="check"><input type="checkbox" id="autoplay" ${snap.autoplay ? "checked" : ""}> Al terminar, seguir con pistas parecidas</label>`;
     if (!snap.queue.length) {
-      drawerBody.innerHTML = `<p class="empty">La cola está vacía. Reproduce un disco o usa «Agregar a la cola».</p>`;
+      drawerBody.innerHTML = `<p class="empty">La cola está vacía. Reproduce un disco o usa «Agregar a la cola».</p>${autoplay}`;
       return;
     }
-    drawerBody.innerHTML = `<ol class="queue">${snap.queue.map((track, index) => `
+    drawerBody.innerHTML = `${autoplay}<ol class="queue">${snap.queue.map((track, index) => `
       <li class="${index === snap.index ? "is-current" : ""}">
-        <button type="button" data-action="queue-play" data-index="${index}">
+        <button type="button" data-action="queue-play" data-index="${index}" ${index === snap.index ? 'aria-current="true"' : ""}>
           <img src="${esc(track.cover_url)}" alt="">
           <span><strong>${esc(track.title)}</strong><small>${esc(track.artist)}</small></span>
         </button>
-        ${index === snap.index ? "" : `<button type="button" class="icon-btn" data-action="queue-remove" data-index="${index}" aria-label="Quitar">×</button>`}
+        ${index === snap.index ? "" : `<button type="button" class="icon-btn" data-action="queue-remove" data-index="${index}" aria-label="Quitar ${esc(track.title)} de la cola">×</button>`}
       </li>`).join("")}</ol>`;
   }
 
-  function renderStudio(snap) {
-    const [bass, mid, treble] = snap.eq;
-    drawerBody.innerHTML = `
-      <p class="lead">Cadena: archivo → graves → medios → agudos → volumen → visualizador.</p>
-      <div class="presets">
-        ${Object.keys(player.presets).map((name) => `<button type="button" class="chip" data-action="preset" data-preset="${name}">${esc(name)}</button>`).join("")}
-      </div>
-      ${slider("Graves", "bass", bass, "120 Hz")}
-      ${slider("Medios", "mid", mid, "1.1 kHz")}
-      ${slider("Agudos", "treble", treble, "5.2 kHz")}
-      <label class="check"><input type="checkbox" id="autoplay" ${snap.autoplay ? "checked" : ""}> Sigue sonando con pistas del mismo género</label>
-      <p class="fine">Atajos: espacio reproduce, flechas izquierda y derecha mueven 5 s, arriba y abajo cambian el volumen.</p>
-    `;
-    drawerBody.querySelectorAll('input[type="range"]').forEach(paintRange);
+  // ---------- Configuración de audio ----------
+
+  function hz(freq) {
+    return freq >= 1000 ? `${freq / 1000} kHz` : `${freq} Hz`;
   }
 
-  function slider(label, key, value, hint) {
-    return `<label class="eq-slider"><span>${label}<small>${hint}</small></span>
-      <input type="range" min="-12" max="12" step="0.5" value="${value}" data-eq="${key}" aria-label="${label}">
-      <em data-eq-readout="${key}">${Number(value).toFixed(1)}</em>
+  function signed(value, unit = "dB") {
+    const n = Number(value) || 0;
+    return `${n > 0 ? "+" : ""}${n.toFixed(1)} ${unit}`;
+  }
+
+  function audioReadout(key, cfg) {
+    if (key === "preamp") return signed(cfg.preamp);
+    if (key === "crossfade") return cfg.crossfade ? `${cfg.crossfade} s` : "Desactivado";
+    if (key === "speed") return `${Number(cfg.speed).toFixed(2)}×`;
+    return "";
+  }
+
+  function toggleRow(key, label, hint, checked, disabled) {
+    return `<label class="set-row switch-row ${disabled ? "is-disabled" : ""}">
+      <span class="set-text"><strong>${label}</strong>${hint ? `<small>${hint}</small>` : ""}</span>
+      <input type="checkbox" class="switch" data-audio-key="${key}" ${checked ? "checked" : ""} ${disabled ? "disabled" : ""}>
     </label>`;
+  }
+
+  function presetChips(cfg) {
+    const builtIn = Object.keys(EQ_PRESETS).map((name) => `<button type="button" class="chip ${cfg.preset === name ? "is-on" : ""}" data-audio="preset" data-name="${esc(name)}" aria-pressed="${cfg.preset === name}">${esc(name)}</button>`).join("");
+    const custom = Object.keys(cfg.custom).map((name) => `<span class="chip-pair">
+        <button type="button" class="chip mine ${cfg.preset === name ? "is-on" : ""}" data-audio="preset" data-name="${esc(name)}" aria-pressed="${cfg.preset === name}">${esc(name)}</button>
+        <button type="button" class="chip-x" data-audio="del-preset" data-name="${esc(name)}" aria-label="Borrar ajuste ${esc(name)}">×</button>
+      </span>`).join("");
+    return builtIn + custom;
+  }
+
+  async function renderAudio() {
+    const cfg = player.audioSettings();
+    const caps = player.capabilities();
+    const snap = player.snapshot();
+    const fx = caps.effects;
+    const off = fx ? "" : "disabled";
+    const bands = EQ_FREQS.map((freq, i) => `
+      <div class="eq-band">
+        <output data-band-readout="${i}">${signed(cfg.eq[i], "")}</output>
+        <div class="eq-slot"><input type="range" min="-12" max="12" step="0.5" value="${cfg.eq[i]}" data-band="${i}" aria-label="Banda ${hz(freq)}" aria-valuetext="${signed(cfg.eq[i])}" aria-orientation="vertical" ${off}></div>
+        <span>${EQ_LABELS[i]}</span>
+      </div>`).join("");
+    const outputBlock = caps.sink
+      ? `<div class="set-row">
+          <span class="set-text"><strong>Salida de audio</strong><small>Parlantes, audífonos o interfaz donde suena SpotyOFO.</small></span>
+          <div class="set-control">
+            <select id="audio-output" aria-label="Dispositivo de salida"><option value="">Predeterminada del sistema</option></select>
+            <button type="button" class="btn ghost small" data-audio="output-access">${caps.selectOutput ? "Elegir…" : "Mostrar nombres"}</button>
+          </div>
+        </div>`
+      : `<p class="fine">Elegir la salida de audio requiere Chrome o Edge en una conexión segura (HTTPS o http://localhost). En esta conexión se usa la salida predeterminada del equipo.</p>`;
+    return `
+      <section class="audio-page" aria-labelledby="audio-title">
+        <header class="page-head">
+          <p class="kicker">Ajustes</p>
+          <h1 class="hello" id="audio-title">Configuración de audio</h1>
+          <p class="lead">Se guarda en este navegador y se aplica al instante.</p>
+        </header>
+
+        <div class="set-card">
+          <h2>Motor de reproducción</h2>
+          <div class="segmented" role="radiogroup" aria-label="Motor de reproducción">
+            <label><input type="radio" name="audio-engine" value="webaudio" ${cfg.engine === "webaudio" ? "checked" : ""}><span>Completo<small>Ecualizador y efectos</small></span></label>
+            <label><input type="radio" name="audio-engine" value="native" ${cfg.engine === "native" ? "checked" : ""}><span>Básico<small>Máxima compatibilidad</small></span></label>
+          </div>
+          ${cfg.engine !== caps.engine ? `<p class="notice">El cambio de motor se aplica al recargar. <button type="button" class="btn solid small" data-audio="reload">Recargar ahora</button></p>` : ""}
+          ${fx ? "" : `<p class="notice">Motor básico activo: ecualizador, normalización y mono no están disponibles.</p>`}
+        </div>
+
+        <div class="set-card">
+          <div class="set-card-head">
+            <h2>Ecualizador de 10 bandas</h2>
+            <label class="switch-inline"><span>Activo</span><input type="checkbox" class="switch" data-audio-key="eqOn" ${cfg.eqOn ? "checked" : ""} ${off} aria-label="Ecualizador activo"></label>
+          </div>
+          <div class="presets" id="eq-presets" role="group" aria-label="Ajustes del ecualizador">${presetChips(cfg)}</div>
+          <div class="eq-bands ${cfg.eqOn ? "" : "is-off"}" id="eq-bands">${bands}</div>
+          <div class="set-row">
+            <span class="set-text"><strong>Preamplificador</strong><small>Baja la ganancia si el ecualizador satura.</small></span>
+            <div class="set-control range-control">
+              <input type="range" min="-12" max="12" step="0.5" value="${cfg.preamp}" data-audio-key="preamp" aria-label="Preamplificador" ${off}>
+              <output data-readout="preamp">${audioReadout("preamp", cfg)}</output>
+            </div>
+          </div>
+          <form class="preset-save" data-audio-form="save-preset">
+            <label class="sr-only" for="preset-name">Nombre del ajuste</label>
+            <input id="preset-name" name="name" maxlength="24" placeholder="Nombre para guardar este ajuste" autocomplete="off" ${off}>
+            <button type="submit" class="btn ghost small" ${off}>Guardar ajuste</button>
+          </form>
+        </div>
+
+        <div class="set-card">
+          <h2>Reproducción</h2>
+          <div class="set-row">
+            <span class="set-text"><strong>Fundido entre pistas</strong><small>Mezcla el final de una canción con el inicio de la siguiente.</small></span>
+            <div class="set-control range-control">
+              <input type="range" min="0" max="12" step="1" value="${cfg.crossfade}" data-audio-key="crossfade" aria-label="Fundido entre pistas en segundos" ${caps.crossfade ? "" : "disabled"}>
+              <output data-readout="crossfade">${audioReadout("crossfade", cfg)}</output>
+            </div>
+          </div>
+          <div class="set-row">
+            <span class="set-text"><strong>Velocidad</strong><small>De 0,5× a 2×.</small></span>
+            <div class="set-control range-control">
+              <input type="range" min="0.5" max="2" step="0.05" value="${cfg.speed}" data-audio-key="speed" aria-label="Velocidad de reproducción">
+              <output data-readout="speed">${audioReadout("speed", cfg)}</output>
+            </div>
+          </div>
+          <div class="presets speed-chips" role="group" aria-label="Velocidades rápidas">
+            ${[0.75, 1, 1.25, 1.5].map((v) => `<button type="button" class="chip" data-audio="speed" data-value="${v}">${v}×</button>`).join("")}
+          </div>
+          ${toggleRow("preservePitch", "Mantener el tono", "Al cambiar la velocidad la voz no suena más aguda ni más grave.", cfg.preservePitch, !caps.pitch)}
+          ${toggleRow("normalize", "Normalizar volumen", "Iguala canciones que suenan muy fuerte o muy bajo.", cfg.normalize, !fx)}
+          ${toggleRow("mono", "Sonido mono", "Mezcla ambos canales; útil con un solo audífono.", cfg.mono, !fx)}
+          ${toggleRow("preload", "Precargar la siguiente pista", "Transiciones sin silencios. Usa algo más de datos.", cfg.preload, false)}
+          <label class="set-row switch-row">
+            <span class="set-text"><strong>Reproducción automática</strong><small>Al terminar la cola sigue con pistas parecidas.</small></span>
+            <input type="checkbox" class="switch" id="autoplay" ${snap.autoplay ? "checked" : ""}>
+          </label>
+        </div>
+
+        <div class="set-card">
+          <h2>Salida</h2>
+          ${outputBlock}
+        </div>
+
+        <div class="set-card">
+          <h2>App</h2>
+          <div class="set-row">
+            <span class="set-text"><strong>Instalar SpotyOFO</strong><small>${window.isSecureContext ? "Ábrela como una app, con su propio ícono." : "Para instalar se necesita HTTPS; en el teléfono puedes usar «Agregar a pantalla de inicio»."}</small></span>
+            <button type="button" class="btn ghost small" data-audio="install" ${installPrompt ? "" : "hidden"}>Instalar</button>
+          </div>
+          <div class="set-row">
+            <span class="set-text"><strong>Restablecer audio</strong><small>Vuelve a los valores de fábrica. Tus ajustes guardados se conservan.</small></span>
+            <button type="button" class="btn ghost small danger-text" data-audio="reset">Restablecer</button>
+          </div>
+        </div>
+
+        <div class="set-card keys-card">
+          <h2>Atajos de teclado</h2>
+          ${shortcutsHtml()}
+        </div>
+      </section>`;
+  }
+
+  function shortcutsHtml() {
+    return `<dl class="shortcuts">${SHORTCUTS.map(([key, what]) => `<div><dt><kbd>${esc(key)}</kbd></dt><dd>${esc(what)}</dd></div>`).join("")}</dl>`;
+  }
+
+  function afterAudio() {
+    if (parts()[0] !== "audio") return;
+    view.querySelectorAll('.audio-page input[type="range"]').forEach(paintRange);
+    outputsLoaded = false;
+    loadOutputs().catch(() => {});
+  }
+
+  async function loadOutputs() {
+    const select = view.querySelector("#audio-output");
+    if (!select) return;
+    const cfg = player.audioSettings();
+    const outputs = await player.listOutputs();
+    const options = outputs.filter((item) => item.id && item.id !== "default");
+    select.innerHTML = `<option value="">Predeterminada del sistema</option>${options.map((item) => `<option value="${esc(item.id)}">${esc(item.label)}</option>`).join("")}`;
+    if (cfg.sinkId && !options.some((item) => item.id === cfg.sinkId)) {
+      select.insertAdjacentHTML("beforeend", `<option value="${esc(cfg.sinkId)}">Dispositivo guardado</option>`);
+    }
+    select.value = cfg.sinkId && cfg.sinkId !== "default" ? cfg.sinkId : "";
+    outputsLoaded = true;
+  }
+
+  function syncAudioView() {
+    if (parts()[0] !== "audio" || !view.querySelector(".audio-page")) return;
+    const cfg = player.audioSettings();
+    const active = document.activeElement;
+    view.querySelectorAll("[data-band]").forEach((input) => {
+      const i = Number(input.dataset.band);
+      if (input !== active) input.value = String(cfg.eq[i]);
+      input.setAttribute("aria-valuetext", signed(cfg.eq[i]));
+      paintRange(input);
+      const out = view.querySelector(`[data-band-readout="${i}"]`);
+      if (out) out.textContent = signed(cfg.eq[i], "");
+    });
+    view.querySelectorAll("[data-audio-key]").forEach((input) => {
+      const key = input.dataset.audioKey;
+      if (input.type === "checkbox") input.checked = Boolean(cfg[key]);
+      else if (input !== active) input.value = String(cfg[key]);
+      if (input.type === "range") paintRange(input);
+      const out = view.querySelector(`[data-readout="${key}"]`);
+      if (out) out.textContent = audioReadout(key, cfg);
+    });
+    const bandsBox = view.querySelector("#eq-bands");
+    if (bandsBox) bandsBox.classList.toggle("is-off", !cfg.eqOn);
+    const chips = view.querySelector("#eq-presets");
+    if (chips && !chips.contains(active)) chips.innerHTML = presetChips(cfg);
+    else if (chips) {
+      chips.querySelectorAll("[data-audio='preset']").forEach((chip) => {
+        const on = chip.dataset.name === cfg.preset;
+        chip.classList.toggle("is-on", on);
+        chip.setAttribute("aria-pressed", String(on));
+      });
+    }
+  }
+
+  function onAudioInput(event) {
+    const input = event.target;
+    if (!view.querySelector(".audio-page")) return;
+    if (input.dataset.band != null) {
+      player.setBand(Number(input.dataset.band), Number(input.value));
+      return;
+    }
+    const key = input.dataset.audioKey;
+    if (!key || input.type === "checkbox") return;
+    player.setAudio({ [key]: Number(input.value) });
+    paintRange(input);
+  }
+
+  async function onAudioChange(event) {
+    const input = event.target;
+    if (!view.querySelector(".audio-page")) return;
+    if (input.name === "audio-engine") {
+      player.setEngine(input.value);
+      show(renderAudio).then(afterAudio);
+      return;
+    }
+    if (input.id === "autoplay") {
+      player.setAutoplay(input.checked);
+      return;
+    }
+    if (input.id === "audio-output") {
+      try {
+        await player.setOutput(input.value);
+        showToast("Salida de audio cambiada");
+      } catch (error) {
+        showToast(`No se pudo usar esa salida: ${error.message}`);
+        loadOutputs().catch(() => {});
+      }
+      return;
+    }
+    const key = input.dataset.audioKey;
+    if (key && input.type === "checkbox") player.setAudio({ [key]: input.checked });
+  }
+
+  async function onAudioClick(event) {
+    const target = event.target.closest("[data-audio]");
+    if (!target || !view.contains(target)) return;
+    const action = target.dataset.audio;
+    if (action === "preset") player.applyEqPreset(target.dataset.name);
+    if (action === "del-preset") {
+      player.deleteCustomPreset(target.dataset.name);
+      showToast("Ajuste borrado");
+    }
+    if (action === "speed") player.setAudio({ speed: Number(target.dataset.value) });
+    if (action === "reload") location.reload();
+    if (action === "reset") {
+      player.resetAudio();
+      showToast("Audio restablecido");
+    }
+    if (action === "install") await promptInstall();
+    if (action === "output-access") {
+      try {
+        await player.requestOutputAccess();
+        await loadOutputs();
+      } catch (error) {
+        showToast(error.name === "NotAllowedError" ? "Permiso denegado por el navegador" : error.message);
+      }
+    }
+  }
+
+  // ---------- Ahora suena (pantalla completa) ----------
+
+  function openNow() {
+    if (!player.current() || !now.hidden) return;
+    lastFocus = document.activeElement;
+    now.hidden = false;
+    now.style.transform = "";
+    document.body.classList.add("now-open");
+    document.getElementById("np-open").setAttribute("aria-expanded", "true");
+    document.getElementById("now-close").focus({ preventScroll: true });
+  }
+
+  function closeNow() {
+    if (now.hidden) return;
+    now.hidden = true;
+    now.style.transform = "";
+    document.body.classList.remove("now-open");
+    document.getElementById("np-open").setAttribute("aria-expanded", "false");
+    if (lastFocus && document.contains(lastFocus)) lastFocus.focus({ preventScroll: true });
+    lastFocus = null;
+  }
+
+  function trapFocus(event, container) {
+    if (event.key !== "Tab") return;
+    const items = [...container.querySelectorAll("button:not([disabled]), input:not([disabled]), select, a[href], [tabindex]:not([tabindex='-1'])")]
+      .filter((el) => el.offsetParent !== null);
+    if (!items.length) return;
+    const first = items[0];
+    const last = items[items.length - 1];
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  }
+
+  function bindNowSwipe() {
+    const cover = document.getElementById("now-cover");
+    let startX = 0;
+    let startY = 0;
+    let startT = 0;
+    let mode = null;
+    let onCover = false;
+    now.addEventListener("touchstart", (event) => {
+      if (event.touches.length !== 1 || event.target.closest("input, select")) {
+        mode = "ignore";
+        return;
+      }
+      const touch = event.touches[0];
+      startX = touch.clientX;
+      startY = touch.clientY;
+      startT = performance.now();
+      mode = null;
+      onCover = event.target === cover;
+    }, { passive: true });
+    now.addEventListener("touchmove", (event) => {
+      if (mode === "ignore") return;
+      const touch = event.touches[0];
+      const dx = touch.clientX - startX;
+      const dy = touch.clientY - startY;
+      if (!mode && Math.hypot(dx, dy) > 12) {
+        const body = document.getElementById("now-body");
+        if (Math.abs(dy) > Math.abs(dx) && dy > 0 && body.scrollTop <= 0) mode = "close";
+        else if (Math.abs(dx) > Math.abs(dy) && onCover) mode = "skip";
+        else mode = "ignore";
+      }
+      if (mode === "close") {
+        now.classList.add("is-dragging");
+        now.style.transform = `translateY(${Math.max(0, dy)}px)`;
+      } else if (mode === "skip") {
+        cover.style.transform = `translateX(${dx * 0.6}px) rotate(${dx / 40}deg)`;
+      }
+    }, { passive: true });
+    now.addEventListener("touchend", (event) => {
+      const touch = event.changedTouches[0];
+      const dx = touch.clientX - startX;
+      const dy = touch.clientY - startY;
+      const fast = performance.now() - startT < 260;
+      now.classList.remove("is-dragging");
+      if (mode === "close") {
+        if (dy > 120 || (fast && dy > 50)) closeNow();
+        else now.style.transform = "";
+      } else if (mode === "skip") {
+        cover.style.transform = "";
+        if (dx < -70 || (fast && dx < -35)) player.next();
+        else if (dx > 70 || (fast && dx > 35)) player.previous();
+      }
+      mode = null;
+    });
+    now.addEventListener("touchcancel", () => {
+      now.classList.remove("is-dragging");
+      now.style.transform = "";
+      cover.style.transform = "";
+      mode = null;
+    });
+  }
+
+  // ---------- Barra lateral ----------
+
+  function loadUiPrefs() {
+    try {
+      return JSON.parse(localStorage.getItem(UI_KEY) || "{}") || {};
+    } catch {
+      return {};
+    }
+  }
+
+  function saveUiPrefs(patch) {
+    try {
+      localStorage.setItem(UI_KEY, JSON.stringify({ ...loadUiPrefs(), ...patch }));
+    } catch {
+      /* almacenamiento lleno o bloqueado */
+    }
+  }
+
+  function syncSideButtons() {
+    const collapsed = document.body.classList.contains("side-collapsed");
+    const open = document.body.classList.contains("side-open");
+    const toggle = document.getElementById("side-toggle");
+    const expanded = desktopQuery.matches ? !collapsed : open;
+    toggle.setAttribute("aria-expanded", String(expanded));
+    toggle.setAttribute("aria-label", desktopQuery.matches ? (collapsed ? "Expandir menú" : "Contraer menú") : "Cerrar menú");
+    document.getElementById("menu-btn").setAttribute("aria-expanded", String(open));
+  }
+
+  function openSide() {
+    document.body.classList.add("side-open");
+    document.getElementById("side-scrim").hidden = false;
+    syncSideButtons();
+    const first = document.querySelector("#sidebar .nav-link");
+    if (first) first.focus({ preventScroll: true });
+  }
+
+  function closeSide() {
+    if (!document.body.classList.contains("side-open")) return;
+    document.body.classList.remove("side-open");
+    document.getElementById("side-scrim").hidden = true;
+    syncSideButtons();
+  }
+
+  function toggleSide() {
+    if (desktopQuery.matches) {
+      const collapsed = document.body.classList.toggle("side-collapsed");
+      saveUiPrefs({ collapsed });
+      syncSideButtons();
+    } else if (document.body.classList.contains("side-open")) closeSide();
+    else openSide();
+  }
+
+  // ---------- Instalación (PWA) ----------
+
+  function showInstall(available) {
+    document.getElementById("install-app").hidden = !available;
+    view.querySelectorAll("[data-audio='install']").forEach((button) => {
+      button.hidden = !available;
+    });
+  }
+
+  async function promptInstall() {
+    if (!installPrompt) return;
+    const event = installPrompt;
+    installPrompt = null;
+    event.prompt();
+    try {
+      await event.userChoice;
+    } catch {
+      /* cancelado */
+    }
+    showInstall(false);
+  }
+
+  // ---------- Atajos ----------
+
+  function isTyping(target) {
+    if (!target || !(target instanceof Element)) return false;
+    if (target.isContentEditable) return true;
+    return Boolean(target.closest("input, textarea, select, [contenteditable='true']"));
+  }
+
+  function showShortcuts() {
+    openModal({
+      title: "Atajos de teclado",
+      body: shortcutsHtml(),
+      confirm: "Listo",
+      noCancel: true,
+      onSubmit: async () => closeModal(),
+    });
+  }
+
+  function onKey(event) {
+    if (event.key === "Escape") {
+      if (!modal.hidden) closeModal();
+      else if (!menu.hidden) closeMenu();
+      else if (!now.hidden) closeNow();
+      else if (document.body.classList.contains("side-open")) closeSide();
+      else if (!drawer.hidden) openDrawer(drawerMode);
+      return;
+    }
+    if (!now.hidden) trapFocus(event, now);
+    if (!modal.hidden) {
+      trapFocus(event, modal);
+      return;
+    }
+    if (event.defaultPrevented || event.ctrlKey || event.metaKey || event.altKey) return;
+    if (isTyping(event.target)) return;
+    const onControl = event.target instanceof Element && event.target.closest("button, a[href], summary, [role='button']");
+    const key = event.key;
+    if (key === " " || event.code === "Space") {
+      if (onControl) return; // el espacio activa el botón enfocado
+      event.preventDefault();
+      player.toggle();
+      return;
+    }
+    if (key === "ArrowRight" || key === "ArrowLeft") {
+      event.preventDefault();
+      const forward = key === "ArrowRight";
+      if (event.shiftKey) forward ? player.next() : player.previous();
+      else player.seekBy(forward ? 5 : -5);
+      return;
+    }
+    if (key === "ArrowUp" || key === "ArrowDown") {
+      event.preventDefault();
+      const snap = player.snapshot();
+      const base = snap.muted ? 0 : snap.volume;
+      player.setVolume(Math.min(1, Math.max(0, base + (key === "ArrowUp" ? 0.05 : -0.05))));
+      return;
+    }
+    if (key === "?") {
+      event.preventDefault();
+      showShortcuts();
+      return;
+    }
+    if (key === "/") {
+      event.preventDefault();
+      searchInput.focus();
+      searchInput.select();
+      return;
+    }
+    const lower = key.length === 1 ? key.toLowerCase() : "";
+    if (event.shiftKey && lower !== "") return;
+    if (lower === "m") player.toggleMute();
+    else if (lower === "s") player.toggleShuffle();
+    else if (lower === "r") player.cycleRepeat();
+    else if (lower === "n") player.next();
+    else if (lower === "p") player.previous();
+    else if (lower === "f") (now.hidden ? openNow() : closeNow());
+    else if (lower === "l") {
+      const track = player.current();
+      if (track) toggleLike(track.id).catch((error) => showToast(error.message));
+    }
   }
 
   function closeMenu() {
@@ -788,12 +1365,15 @@ export function createUI(player) {
     const rect = button.getBoundingClientRect();
     const width = 240;
     const left = Math.min(rect.left, window.innerWidth - width - 12);
-    const top = Math.min(rect.bottom + 6, window.innerHeight - 280);
+    const height = menu.offsetHeight || 280;
+    const top = rect.bottom + 6 + height > window.innerHeight - 12 ? rect.top - height - 6 : rect.bottom + 6;
     menu.style.left = `${Math.max(8, left)}px`;
     menu.style.top = `${Math.max(8, top)}px`;
   }
 
-  function openModal({ title, body, confirm, danger, onSubmit }) {
+  function openModal({ title, body, confirm, danger, onSubmit, noCancel }) {
+    if (modal.hidden) modalFocus = document.activeElement;
+    document.getElementById("modal-cancel").hidden = Boolean(noCancel);
     document.getElementById("modal-title").textContent = title;
     document.getElementById("modal-body").innerHTML = body;
     const ok = document.getElementById("modal-ok");
@@ -806,9 +1386,12 @@ export function createUI(player) {
   }
 
   function closeModal() {
+    const wasOpen = !modal.hidden;
     modal.hidden = true;
     modalSubmit = null;
     pendingLibrary = null;
+    if (wasOpen && modalFocus && document.contains(modalFocus)) modalFocus.focus({ preventScroll: true });
+    modalFocus = null;
   }
 
   function playlistForm(item, options = {}) {
@@ -1166,6 +1749,10 @@ export function createUI(player) {
     document.getElementById("p-title").addEventListener("click", () => {
       const track = player.current();
       if (!track) return;
+      if (phoneQuery.matches) {
+        openNow();
+        return;
+      }
       if (track.source === "device") go(equipoHash(track.folder || ""));
       else if (track.album_id) go(`#/album/${track.album_id}`);
     });
@@ -1178,34 +1765,68 @@ export function createUI(player) {
         go(equipoHash(parent));
       } else if (track.artist_id) go(`#/artist/${track.artist_id}`);
     });
-    document.getElementById("np-open").addEventListener("click", () => {
-      if (!player.current()) return;
-      document.getElementById("now").hidden = false;
-    });
-    document.getElementById("now-close").addEventListener("click", () => {
-      document.getElementById("now").hidden = true;
-    });
+    document.getElementById("np-open").addEventListener("click", openNow);
+    document.getElementById("np-open").setAttribute("aria-haspopup", "dialog");
+    document.getElementById("now-close").addEventListener("click", closeNow);
     document.getElementById("p-queue").addEventListener("click", () => openDrawer("queue"));
-    document.getElementById("p-studio").addEventListener("click", () => openDrawer("studio"));
+    document.getElementById("p-queue").setAttribute("aria-controls", "drawer");
+    document.getElementById("p-studio").addEventListener("click", () => go("#/audio"));
     document.getElementById("drawer-close").addEventListener("click", () => openDrawer(drawerMode));
-    drawerBody.addEventListener("input", (event) => {
-      const eq = event.target.dataset.eq;
-      if (eq) {
-        const snap = player.snapshot();
-        const values = { bass: snap.eq[0], mid: snap.eq[1], treble: snap.eq[2] };
-        values[eq] = Number(event.target.value);
-        player.applyEq(values.bass, values.mid, values.treble);
-        const readout = drawerBody.querySelector(`[data-eq-readout="${eq}"]`);
-        if (readout) readout.textContent = Number(event.target.value).toFixed(1);
-        paintRange(event.target);
+    now.addEventListener("click", (event) => {
+      const button = event.target.closest("[data-now]");
+      if (!button) return;
+      const action = button.dataset.now;
+      if (action === "play") player.toggle();
+      if (action === "prev") player.previous();
+      if (action === "next") player.next();
+      if (action === "shuffle") player.toggleShuffle();
+      if (action === "repeat") player.cycleRepeat();
+      if (action === "like") {
+        const track = player.current();
+        if (track) toggleLike(track.id).catch((error) => showToast(error.message));
+      }
+      if (action === "queue") {
+        closeNow();
+        if (drawer.hidden || drawerMode !== "queue") openDrawer("queue");
+      }
+      if (action === "audio") {
+        closeNow();
+        go("#/audio");
+      }
+    });
+    const nowSeek = document.getElementById("now-seek");
+    nowSeek.addEventListener("pointerdown", () => {
+      nowSeeking = true;
+    });
+    nowSeek.addEventListener("input", () => {
+      nowSeeking = true;
+      paintRange(nowSeek);
+    });
+    nowSeek.addEventListener("change", () => {
+      player.seekRatio(Number(nowSeek.value) / 1000);
+      nowSeeking = false;
+    });
+    bindNowSwipe();
+    view.addEventListener("input", onAudioInput);
+    view.addEventListener("change", (event) => {
+      onAudioChange(event).catch((error) => showToast(error.message));
+    });
+    view.addEventListener("click", (event) => {
+      onAudioClick(event).catch((error) => showToast(error.message));
+    });
+    view.addEventListener("submit", (event) => {
+      const form = event.target.closest("[data-audio-form='save-preset']");
+      if (!form) return;
+      event.preventDefault();
+      try {
+        player.saveCustomPreset(form.elements.name.value);
+        form.reset();
+        showToast("Ajuste guardado");
+      } catch (error) {
+        showToast(error.message);
       }
     });
     drawerBody.addEventListener("click", (event) => {
-      const preset = event.target.closest("[data-action='preset']");
-      if (preset) {
-        player.applyPreset(preset.dataset.preset);
-        renderStudio(player.snapshot());
-      }
       const play = event.target.closest("[data-action='queue-play']");
       if (play) player.playQueueIndex(Number(play.dataset.index));
       const remove = event.target.closest("[data-action='queue-remove']");
@@ -1218,7 +1839,10 @@ export function createUI(player) {
     seek.addEventListener("pointerdown", () => {
       seeking = true;
     });
-    seek.addEventListener("input", () => paintRange(seek));
+    seek.addEventListener("input", () => {
+      seeking = true;
+      paintRange(seek);
+    });
     seek.addEventListener("change", () => {
       player.seekRatio(Number(seek.value) / 1000);
       seeking = false;
@@ -1230,27 +1854,41 @@ export function createUI(player) {
     });
     document.getElementById("p-mute").addEventListener("click", () => player.toggleMute());
     window.addEventListener("hashchange", () => route());
-    window.addEventListener("keydown", (event) => {
-      if (event.key === "Escape") {
-        document.getElementById("now").hidden = true;
-        closeMenu();
-        closeModal();
-      }
-      const tag = document.activeElement?.tagName;
-      if (tag === "INPUT" || tag === "TEXTAREA") return;
-      if (event.code === "Space") {
-        event.preventDefault();
-        player.toggle();
-      } else if (event.code === "ArrowRight") player.seekBy(5);
-      else if (event.code === "ArrowLeft") player.seekBy(-5);
-      else if (event.code === "ArrowUp") {
-        event.preventDefault();
-        player.setVolume(player.snapshot().volume + 0.05);
-      } else if (event.code === "ArrowDown") {
-        event.preventDefault();
-        player.setVolume(player.snapshot().volume - 0.05);
-      }
+    window.addEventListener("keydown", onKey);
+    document.getElementById("keys-help").addEventListener("click", showShortcuts);
+    document.getElementById("side-toggle").addEventListener("click", toggleSide);
+    document.getElementById("menu-btn").addEventListener("click", toggleSide);
+    document.getElementById("side-scrim").addEventListener("click", closeSide);
+    document.getElementById("sidebar").addEventListener("click", (event) => {
+      if (event.target.closest("a[href]")) closeSide();
     });
+    if (loadUiPrefs().collapsed) document.body.classList.add("side-collapsed");
+    desktopQuery.addEventListener("change", () => {
+      closeSide();
+      syncSideButtons();
+    });
+    syncSideButtons();
+    window.addEventListener("beforeinstallprompt", (event) => {
+      event.preventDefault();
+      installPrompt = event;
+      showInstall(true);
+    });
+    window.addEventListener("appinstalled", () => {
+      installPrompt = null;
+      showInstall(false);
+      showToast("SpotyOFO instalada");
+    });
+    document.getElementById("install-app").addEventListener("click", () => promptInstall());
+    player.on("audio", syncAudioView);
+    player.on("error", (error) => {
+      if (error?.name === "NotAllowedError") showToast("Toca reproducir para empezar");
+      else showToast(error?.message || "Error de reproducción");
+    });
+    if (navigator.mediaDevices && typeof navigator.mediaDevices.addEventListener === "function") {
+      navigator.mediaDevices.addEventListener("devicechange", () => {
+        if (outputsLoaded) loadOutputs().catch(() => {});
+      });
+    }
     player.on("state", syncPlayer);
     player.on("time", syncTime);
     const snap = player.snapshot();

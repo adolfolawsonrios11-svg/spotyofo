@@ -33,6 +33,20 @@ if TRUST_PROXY:
 uploads.ensure_dirs()
 uploads.purge_pending()
 
+ROOT_DIR = Path(__file__).resolve().parent
+
+
+def compute_asset_version():
+    """Versión de los archivos estáticos: cambia sola cuando se edita JS, CSS o el service worker."""
+    newest = 0
+    for pattern in ("static/js/*.js", "static/css/*.css", "pwa/*"):
+        for path in ROOT_DIR.glob(pattern):
+            newest = max(newest, int(path.stat().st_mtime))
+    return format(newest, "x")
+
+
+ASSET_VERSION = compute_asset_version()
+
 DAYS = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo"]
 MONTHS = [
     "enero", "febrero", "marzo", "abril", "mayo", "junio",
@@ -176,15 +190,17 @@ def like_pattern(value):
 
 @app.get("/manifest.webmanifest")
 def web_manifest():
-    path = Path(__file__).resolve().parent / "pwa" / "manifest.webmanifest"
+    path = ROOT_DIR / "pwa" / "manifest.webmanifest"
     return send_file(path, mimetype="application/manifest+json", max_age=0)
 
 
 @app.get("/sw.js")
 def service_worker():
-    path = Path(__file__).resolve().parent / "pwa" / "sw.js"
-    response = send_file(path, mimetype="application/javascript", max_age=0)
+    path = ROOT_DIR / "pwa" / "sw.js"
+    body = path.read_text(encoding="utf-8").replace("__ASSET_V__", ASSET_VERSION)
+    response = app.response_class(body, mimetype="application/javascript")
     response.headers["Service-Worker-Allowed"] = "/"
+    response.headers["Cache-Control"] = "no-cache"
     return response
 
 
@@ -199,7 +215,9 @@ def index():
         return render_template("db_error.html", message=str(exc)), 500
     if not total:
         return render_template("db_error.html", message="La base está vacía. Ejecuta python synthesize.py"), 500
-    return render_template("index.html")
+    response = app.make_response(render_template("index.html", asset_v=ASSET_VERSION))
+    response.headers["Cache-Control"] = "no-cache"
+    return response
 
 
 @app.get("/api/health")

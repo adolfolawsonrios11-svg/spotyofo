@@ -1,10 +1,13 @@
-import { createPlayer } from "./player.js";
-import { createUI } from "./ui.js";
+import { createPlayer } from "./player.js?v=20260927b";
+import { createUI } from "./ui.js?v=20260927c";
 
 const player = createPlayer();
 const ui = createUI(player);
 ui.boot();
 
-if ("serviceWorker" in navigator) {
-  navigator.serviceWorker.register("/sw.js", { scope: "/" }).catch(() => {});
+// El service worker solo funciona en contexto seguro (HTTPS o localhost).
+if ("serviceWorker" in navigator && window.isSecureContext) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("/sw.js", { scope: "/" }).catch(() => {});
+  });
 }
