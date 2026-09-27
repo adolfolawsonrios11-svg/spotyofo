@@ -338,9 +338,16 @@ export function createUI(player) {
     }
     const empty = !data.tracks.length && !data.albums.length && !data.artists.length && !data.playlists.length;
     if (empty) return `<h1 class="hello">Sin resultados</h1><p class="lead">No hay coincidencias para «${esc(query)}».</p>`;
+    const songCount = data.track_total || data.tracks.length;
+    const songLabel = `${songCount} ${songCount === 1 ? "canción" : "canciones"}`;
     return `
-      <h1 class="hello">Resultados</h1>
-      <p class="lead">«${esc(query)}»</p>
+      <div class="results-head">
+        <div>
+          <h1 class="hello">Resultados</h1>
+          <p class="lead">«${esc(query)}»${data.tracks.length ? ` · ${songLabel}` : ""}</p>
+        </div>
+        ${data.tracks.length ? `<button type="button" class="btn solid" data-action="play-search" data-query="${esc(query)}">Reproducir todos</button>` : ""}
+      </div>
       ${data.tracks.length ? `<section class="block"><div class="block-head"><h2>Canciones</h2></div><div class="tracklist">${data.tracks.map((track, index) => trackRow(track, index, { album: true, context: "search", contextId: query })).join("")}</div></section>` : ""}
       ${data.artists.length ? section("Artistas", data.artists.map((item) => card(`#/artist/${item.id}`, item.cover_url, item.name, `${item.genre} · ${item.origin}`, "play-artist", item.id)).join("")) : ""}
       ${data.albums.length ? section("Álbumes", data.albums.map((item) => card(`#/album/${item.id}`, item.cover_url, item.title, albumSub(item), "play-album", item.id)).join("")) : ""}
@@ -2137,6 +2144,18 @@ export function createUI(player) {
         return;
       }
       await player.playContext(rows, 0);
+      return;
+    }
+    if (action === "play-search") {
+      const data = await api.search(target.dataset.query || "", true);
+      const tracks = data.tracks || [];
+      remember(tracks);
+      if (!tracks.length) {
+        showToast("No hay canciones para reproducir");
+        return;
+      }
+      await player.playContext(tracks, 0, { shuffle: false });
+      if (data.track_total > tracks.length) showToast(`Reproduciendo las primeras ${tracks.length} canciones`);
       return;
     }
     if (action === "play-likes" || action === "play-likes-shuffle") {

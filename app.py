@@ -1039,11 +1039,24 @@ def search():
             genres = [row["genre"] for row in cur.fetchall()]
         return jsonify(query="", genres=genres, tracks=[], albums=[], artists=[], playlists=[])
     pattern = like_pattern(q)
+    track_limit = 300 if request.args.get("all") == "1" else 24
+    with get_db().cursor() as cur:
+        cur.execute(
+            """
+            SELECT COUNT(*) AS total
+            FROM tracks t
+            JOIN artists a ON a.id = t.artist_id
+            JOIN albums al ON al.id = t.album_id
+            WHERE t.title LIKE %s OR a.name LIKE %s OR al.title LIKE %s OR t.genre LIKE %s
+            """,
+            (pattern, pattern, pattern, pattern),
+        )
+        track_total = int(cur.fetchone()["total"])
     found_tracks = tracks_where(
         "WHERE t.title LIKE %s OR a.name LIKE %s OR al.title LIKE %s OR t.genre LIKE %s",
         (pattern, pattern, pattern, pattern),
         order="t.title",
-        limit=24,
+        limit=track_limit,
     )
     with get_db().cursor() as cur:
         cur.execute(
@@ -1084,7 +1097,15 @@ def search():
             (pattern, pattern, uid()),
         )
         playlists = [playlist_row(row) for row in cur.fetchall()]
-    return jsonify(query=q, genres=[], tracks=found_tracks, albums=albums, artists=artists, playlists=playlists)
+    return jsonify(
+        query=q,
+        genres=[],
+        tracks=found_tracks,
+        track_total=track_total,
+        albums=albums,
+        artists=artists,
+        playlists=playlists,
+    )
 
 
 # ---------- carpeta Música del servidor: solo administradores ----------

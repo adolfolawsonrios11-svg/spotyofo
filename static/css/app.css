@@ -276,6 +276,16 @@ img { display: block; max-width: 100%; }
   letter-spacing: -0.05em;
   margin: 8px 0 18px;
 }
+.results-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px 24px;
+  flex-wrap: wrap;
+}
+.results-head .hello { margin-bottom: 6px; }
+.results-head .lead { margin: 0 0 18px; }
+.results-head .btn { margin-bottom: 18px; flex: 0 0 auto; }
 .date-label, .kicker, .lead, .fine, .catalog-note, .empty, .loading {
   color: var(--muted);
 }
