@@ -12,6 +12,7 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 import adminpin
 import devicelibrary
 import localfiles
+import playlistedit
 import uploads
 from config import HOST, PORT, TRUST_PROXY
 from db import TRACK_SQL, connect, init_schema, row_dict
@@ -335,16 +336,35 @@ def list_playlists():
         return jsonify([playlist_row(row) for row in cur.fetchall()])
 
 
+@app.get("/api/playlists/mine")
+def my_playlists():
+    """Listas propias para el selector «Agregar a playlist»: portada, cantidad y si ya tienen la pista."""
+    track_id = request.args.get("track_id", type=int)
+    path = str(request.args.get("path", "")).replace("\\", "/").strip("/")[:512]
+    rows = playlistedit.own_playlists(get_db(), track_id=track_id, path=path or None)
+    result = []
+    for row in rows:
+        item = playlist_row(row)
+        item["track_count"] = row["track_count"]
+        item["contains"] = row["contains"]
+        result.append(item)
+    return jsonify(result)
+
+
 @app.post("/api/playlists")
 def create_playlist():
+    if not same_origin():
+        return fail("Petición rechazada.", 403)
     body = request.get_json(silent=True) or {}
-    name = str(body.get("name", "")).strip()
+    name = " ".join(str(body.get("name", "")).split())
     description = str(body.get("description", "")).strip()
     if not name or len(name) > 80:
         return fail("Escribe un nombre de hasta 80 caracteres.")
     if len(description) > 280:
         return fail("La descripción admite hasta 280 caracteres.")
-    with get_db().cursor() as cur:
+    written = []
+
+    def create_row(cur):
         cur.execute("SELECT COUNT(*) AS total FROM playlists WHERE editorial = 0")
         index = cur.fetchone()["total"]
         accent_a, accent_b = PALETTE[index % len(PALETTE)]
@@ -358,12 +378,35 @@ def create_playlist():
         new_id = cur.lastrowid
         cover = f"user-{new_id}.svg"
         write_playlist_cover(cover, accent_a, accent_b, name)
+        written.append(cover)
         cur.execute("UPDATE playlists SET cover_file = %s WHERE id = %s", (cover, new_id))
-    return jsonify(playlist_detail(new_id)), 201
+        return new_id
+
+    try:
+        new_id, result = playlistedit.create_with_items(get_db(), create_row, body)
+    except playlistedit.PlaylistError as exc:
+        remove_playlist_covers(written)
+        return fail(exc.message, exc.code)
+    except Exception:
+        remove_playlist_covers(written)
+        raise
+    data = playlist_detail(new_id)
+    data["result"] = result
+    return jsonify(data), 201
+
+
+def remove_playlist_covers(names):
+    for name in names:
+        try:
+            (ROOT_DIR / "static" / "covers" / name).unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 @app.patch("/api/playlists/<int:playlist_id>")
 def update_playlist(playlist_id):
+    if not same_origin():
+        return fail("Petición rechazada.", 403)
     current = playlist_detail(playlist_id)
     if not current:
         return fail("Lista no encontrada.", 404)
@@ -386,6 +429,8 @@ def update_playlist(playlist_id):
 
 @app.delete("/api/playlists/<int:playlist_id>")
 def delete_playlist(playlist_id):
+    if not same_origin():
+        return fail("Petición rechazada.", 403)
     current = playlist_detail(playlist_id)
     if not current:
         return fail("Lista no encontrada.", 404)
@@ -393,6 +438,9 @@ def delete_playlist(playlist_id):
         return fail("Las listas editoriales no se eliminan.", 403)
     with get_db().cursor() as cur:
         cur.execute("DELETE FROM playlists WHERE id = %s", (playlist_id,))
+    cover = str(current.get("cover_file") or "")
+    if cover == f"user-{playlist_id}.svg":
+        remove_playlist_covers([cover])
     return jsonify(ok=True)
 
 
@@ -406,49 +454,46 @@ def get_playlist(playlist_id):
 
 @app.post("/api/playlists/<int:playlist_id>/tracks")
 def add_playlist_track(playlist_id):
-    current = playlist_detail(playlist_id)
-    if not current:
-        return fail("Lista no encontrada.", 404)
-    if current["editorial"]:
-        return fail("Las listas editoriales están cerradas. Crea una lista tuya.", 403)
+    """Agrega una o varias pistas (track_id, track_ids, keys, paths o source álbum/lista). Omite repetidas."""
+    if not same_origin():
+        return fail("Petición rechazada.", 403)
     body = request.get_json(silent=True) or {}
     try:
-        track_id = int(body.get("track_id"))
-    except (TypeError, ValueError):
-        return fail("Falta la pista.")
-    with get_db().cursor() as cur:
-        cur.execute("SELECT id FROM tracks WHERE id = %s", (track_id,))
-        if not cur.fetchone():
-            return fail("Pista no encontrada.", 404)
-        cur.execute(
-            "SELECT COALESCE(MAX(position), -1) AS max_pos FROM playlist_tracks WHERE playlist_id = %s",
-            (playlist_id,),
-        )
-        position = cur.fetchone()["max_pos"] + 1
-        cur.execute(
-            """
-            INSERT INTO playlist_tracks (playlist_id, track_id, position)
-            VALUES (%s, %s, %s)
-            ON DUPLICATE KEY UPDATE position = position
-            """,
-            (playlist_id, track_id, position),
-        )
-    return jsonify(playlist_detail(playlist_id))
+        return jsonify(playlistedit.add_items(get_db(), playlist_id, body))
+    except playlistedit.PlaylistError as exc:
+        return fail(exc.message, exc.code)
+
+
+@app.post("/api/playlists/<int:playlist_id>/tracks/remove")
+def remove_playlist_tracks(playlist_id):
+    if not same_origin():
+        return fail("Petición rechazada.", 403)
+    body = request.get_json(silent=True) or {}
+    try:
+        return jsonify(playlistedit.remove_items(get_db(), playlist_id, body.get("keys")))
+    except playlistedit.PlaylistError as exc:
+        return fail(exc.message, exc.code)
 
 
 @app.delete("/api/playlists/<int:playlist_id>/tracks/<int:track_id>")
 def remove_playlist_track(playlist_id, track_id):
-    current = playlist_detail(playlist_id)
-    if not current:
-        return fail("Lista no encontrada.", 404)
-    if current["editorial"]:
-        return fail("Las listas editoriales están cerradas.", 403)
-    with get_db().cursor() as cur:
-        cur.execute(
-            "DELETE FROM playlist_tracks WHERE playlist_id = %s AND track_id = %s",
-            (playlist_id, track_id),
-        )
-    return jsonify(playlist_detail(playlist_id))
+    if not same_origin():
+        return fail("Petición rechazada.", 403)
+    try:
+        return jsonify(playlistedit.remove_items(get_db(), playlist_id, [f"t:{track_id}"]))
+    except playlistedit.PlaylistError as exc:
+        return fail(exc.message, exc.code)
+
+
+@app.put("/api/playlists/<int:playlist_id>/order")
+def reorder_playlist(playlist_id):
+    if not same_origin():
+        return fail("Petición rechazada.", 403)
+    body = request.get_json(silent=True) or {}
+    try:
+        return jsonify(playlistedit.reorder(get_db(), playlist_id, body.get("keys")))
+    except playlistedit.PlaylistError as exc:
+        return fail(exc.message, exc.code)
 
 
 @app.get("/api/albums/<int:album_id>")
@@ -742,10 +787,8 @@ def equipo_add_playlist():
     except (TypeError, ValueError):
         return fail("Elige una lista.")
     try:
-        result = devicelibrary.add_saved_to_playlist(get_db(), str(body.get("path", "")), playlist_id)
-    except localfiles.LocalFileError as exc:
-        return fail(exc.message, exc.code)
-    except devicelibrary.LibraryError as exc:
+        result = playlistedit.add_items(get_db(), playlist_id, {"paths": [str(body.get("path", ""))]})
+    except playlistedit.PlaylistError as exc:
         return fail(exc.message, exc.code)
     return jsonify(result)
 
@@ -755,10 +798,12 @@ def equipo_remove_playlist(playlist_id):
     if not same_origin():
         return fail("Petición rechazada.", 403)
     body = request.get_json(silent=True) or {}
+    path = str(body.get("path", "")).replace("\\", "/").strip("/")
     try:
-        result = devicelibrary.remove_saved_from_playlist(get_db(), playlist_id, str(body.get("path", "")).replace("\\", "/").strip("/"))
-    except devicelibrary.LibraryError as exc:
+        result = playlistedit.remove_items(get_db(), playlist_id, [f"d:{path}"])
+    except playlistedit.PlaylistError as exc:
         return fail(exc.message, exc.code)
+    result["ok"] = True
     return jsonify(result)
 
 

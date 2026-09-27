@@ -1,5 +1,5 @@
-import { api } from "./api.js?v=20260927b";
-import { EQ_FREQS, EQ_LABELS, EQ_PRESETS } from "./player.js?v=20260927d";
+import { api } from "./api.js?v=20260927e";
+import { EQ_FREQS, EQ_LABELS, EQ_PRESETS } from "./player.js?v=20260927e";
 
 const GENRES = {
   "Dream pop": ["#12343a", "#8ef0d0"],
@@ -43,13 +43,25 @@ export function createUI(player) {
   const menu = document.getElementById("menu");
   const modal = document.getElementById("modal");
   const toast = document.getElementById("toast");
+  const picker = document.getElementById("picker");
+  const pickerList = document.getElementById("picker-list");
+  const pickerSearch = document.getElementById("picker-search");
+  const pickerNote = document.getElementById("picker-note");
+  const pickerCreate = document.getElementById("picker-create");
+  const pickerNew = document.getElementById("picker-new");
+  const srStatus = document.getElementById("sr-status");
+  const coarseQuery = window.matchMedia("(pointer: coarse)");
+  let pickerState = null;
+  let pickerFocus = null;
+  let menuOpener = null;
+  let orderTimer = 0;
+  let orderPlaylist = null;
   let drawerMode = null;
   let toastTimer = 0;
   let searchTimer = 0;
   let seeking = false;
   let modalSubmit = null;
   let menuTrack = null;
-  let pendingLibrary = null;
   let menuPlaylistId = null;
   let uploading = false;
   let nowSeeking = false;
@@ -90,13 +102,52 @@ export function createUI(player) {
     (tracks || []).forEach((track) => known.set(track.id, track));
   }
 
-  function showToast(message) {
-    toast.textContent = message;
-    toast.hidden = false;
+  function hideToast() {
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => {
-      toast.hidden = true;
-    }, 2400);
+    toast.hidden = true;
+  }
+
+  // Aviso breve. Con acciones («Ver», «Deshacer») dura más y se pausa al pasar el mouse o enfocarlo.
+  function showToast(message, actions = []) {
+    clearTimeout(toastTimer);
+    const text = document.createElement("span");
+    text.textContent = message;
+    toast.replaceChildren(text);
+    actions.forEach((action) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "toast-act";
+      button.textContent = action.label;
+      button.addEventListener("click", () => {
+        hideToast();
+        Promise.resolve()
+          .then(action.run)
+          .catch((error) => showToast(error.message));
+      });
+      toast.append(button);
+    });
+    toast.classList.toggle("has-actions", actions.length > 0);
+    toast.hidden = false;
+    toastTimer = setTimeout(hideToast, actions.length ? 6000 : 2400);
+  }
+
+  function announce(message) {
+    srStatus.textContent = "";
+    requestAnimationFrame(() => {
+      srStatus.textContent = message;
+    });
+  }
+
+  function plural(count, one, many) {
+    return `${count} ${count === 1 ? one : many}`;
+  }
+
+  function trackKey(track) {
+    return track.source === "device" ? `d:${track.id}` : `t:${track.id}`;
+  }
+
+  function fold(text) {
+    return String(text || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
   }
 
   function parts() {
@@ -206,11 +257,21 @@ export function createUI(player) {
       ${album}
       ${like}
       <span class="time">${fmt(track.duration_ms)}</span>
-      <button type="button" class="icon-btn more" data-action="menu" data-id="${id}" data-playlist="${options.playlistId || ""}" aria-label="Más opciones">···</button>
+      <button type="button" class="icon-btn more" data-action="menu" data-id="${id}" data-playlist="${options.playlistId || ""}" aria-label="Más opciones para ${esc(track.title)}" aria-haspopup="menu">···</button>
+      ${options.sortable ? `<span class="sort-btns">
+        <button type="button" class="icon-btn" data-action="move-up" aria-label="Subir ${esc(track.title)}"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 14 6-6 6 6"/></svg></button>
+        <button type="button" class="icon-btn" data-action="move-down" aria-label="Bajar ${esc(track.title)}"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 10 6 6 6-6"/></svg></button>
+      </span>` : ""}
     </div>`;
   }
 
-  function collectionHead(item, kindLabel, action, id, extra) {
+  const ADD_ICON = `<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 8v8M8 12h8"/></svg>`;
+
+  function addButton(kind, id) {
+    return `<button type="button" class="btn ghost add-to" data-action="add-collection" data-kind="${kind}" data-id="${esc(id ?? "")}">${ADD_ICON}<span>Agregar a playlist</span></button>`;
+  }
+
+  function collectionHead(item, kindLabel, action, id, extra, tools = "") {
     return `<header class="sheet" style="--a:${item.accent_a};--b:${item.accent_b}">
       <img src="${esc(item.cover_url)}" alt="">
       <div>
@@ -219,6 +280,7 @@ export function createUI(player) {
         <p class="sheet-sub">${extra}</p>
         <div class="sheet-actions">
           <button type="button" class="btn solid" data-action="${action}" data-id="${id}">Reproducir</button>
+          ${tools}
           ${item.editorial === false ? `<button type="button" class="btn ghost" data-action="edit-playlist" data-id="${id}">Editar</button>
             <button type="button" class="btn ghost danger" data-action="delete-playlist" data-id="${id}">Eliminar</button>` : ""}
         </div>
@@ -317,6 +379,7 @@ export function createUI(player) {
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16 4h5v5M4 18l5.5-5.5M14 14l6 6M4 6l6 6M16 20h5v-5"/></svg>
               Reproducir aleatoria
             </button>
+            ${addButton("likes", "")}
           </div>` : ""}
         </div>
       </header>
@@ -329,8 +392,8 @@ export function createUI(player) {
     remember(item.tracks);
     const meta = `${item.tracks.length} canciones · ${fmt(item.duration_ms)}${item.editorial ? " · Editorial" : ""}`;
     return `
-      ${collectionHead({ ...item, title: item.name }, item.editorial ? "Lista editorial" : "Tu lista", "play-playlist", item.id, `${esc(item.description)}<br>${esc(meta)}`)}
-      ${item.tracks.length ? `<div class="tracklist">${item.tracks.map((track, index) => trackRow(track, index, { album: true, context: "playlist", contextId: item.id, playlistId: item.editorial ? "" : item.id })).join("")}</div>` : `<p class="empty">Esta lista está vacía. Agrega canciones desde el menú ··· de cualquier pista.</p>`}
+      ${collectionHead({ ...item, title: item.name }, item.editorial ? "Lista editorial" : "Tu lista", "play-playlist", item.id, `${esc(item.description)}<br>${esc(meta)}`, `${item.tracks.length ? addButton("playlist", item.id) : ""}${!item.editorial && item.tracks.length > 1 ? `<button type="button" class="btn ghost" data-action="sort-playlist" data-id="${item.id}" aria-pressed="false">Ordenar</button>` : ""}`)}
+      ${item.tracks.length ? `<div class="tracklist" data-playlist="${item.editorial ? "" : item.id}">${item.tracks.map((track, index) => trackRow(track, index, { album: true, context: "playlist", contextId: item.id, playlistId: item.editorial ? "" : item.id, sortable: !item.editorial })).join("")}</div>` : `<p class="empty">Esta lista está vacía. Agrega canciones con «Agregar a playlist» en el menú ··· de cualquier canción.</p>`}
     `;
   }
 
@@ -339,7 +402,7 @@ export function createUI(player) {
     remember(item.tracks);
     const meta = `<a href="#/artist/${item.artist_id}">${esc(item.artist)}</a>${item.year ? ` · ${esc(item.year)}` : ""} · ${item.tracks.length} canciones · ${fmt(item.duration_ms)}<br>${esc(item.credit)}`;
     return `
-      ${collectionHead(item, "Álbum", "play-album", item.id, meta)}
+      ${collectionHead(item, "Álbum", "play-album", item.id, meta, item.tracks.length ? addButton("album", item.id) : "")}
       <div class="tracklist">${item.tracks.map((track, index) => trackRow(track, index, { album: false, context: "album", contextId: item.id })).join("")}</div>
     `;
   }
@@ -375,6 +438,7 @@ export function createUI(player) {
       <span class="time">${fmt(track.duration_ms)}</span>
       <button type="button" class="icon-btn heart ${track.liked ? "is-on" : ""}" data-action="like" data-like="${track.id}" aria-label="Me gusta">${track.liked ? "♥" : "♡"}</button>
       <button type="button" class="icon-btn up-delete" data-action="delete-upload" data-id="${track.id}" aria-label="Eliminar ${esc(track.title)}" title="${admin ? "Eliminar" : "Eliminar (pide PIN)"}">${TRASH_ICON}</button>
+      <button type="button" class="icon-btn more" data-action="menu" data-id="${track.id}" data-playlist="" aria-label="Más opciones para ${esc(track.title)}" aria-haspopup="menu">···</button>
     </div>`;
   }
 
@@ -608,6 +672,8 @@ export function createUI(player) {
   }
 
   async function route() {
+    if (orderTimer) flushOrder();
+    closePicker();
     const [name, arg] = parts();
     if (name !== "search" && document.activeElement !== searchInput) searchInput.value = "";
     markNav();
@@ -653,6 +719,7 @@ export function createUI(player) {
   }
 
   async function playFromRow(button) {
+    if (orderTimer) await flushOrder();
     const context = button.dataset.context;
     const contextId = button.dataset.contextId;
     const index = Number(button.dataset.index || 0);
@@ -720,6 +787,7 @@ export function createUI(player) {
       cover.removeAttribute("src");
       like.disabled = true;
       nowLike.disabled = true;
+      document.getElementById("p-add").disabled = true;
       document.body.classList.remove("has-track");
       document.title = "SpotyOFO";
       return;
@@ -731,6 +799,7 @@ export function createUI(player) {
     document.body.classList.add("has-track");
     like.disabled = false;
     nowLike.disabled = false;
+    document.getElementById("p-add").disabled = false;
     [like, nowLike].forEach((button) => {
       button.classList.toggle("is-on", Boolean(track.liked));
       button.setAttribute("aria-pressed", String(Boolean(track.liked)));
@@ -806,6 +875,7 @@ export function createUI(player) {
           <img src="${esc(track.cover_url)}" alt="">
           <span><strong>${esc(track.title)}</strong><small>${esc(track.artist)}</small></span>
         </button>
+        <button type="button" class="icon-btn more" data-action="queue-menu" data-index="${index}" aria-label="Más opciones para ${esc(track.title)}" aria-haspopup="menu">···</button>
         ${index === snap.index ? "" : `<button type="button" class="icon-btn" data-action="queue-remove" data-index="${index}" aria-label="Quitar ${esc(track.title)} de la cola">×</button>`}
       </li>`).join("")}</ol>`;
   }
@@ -1274,9 +1344,14 @@ export function createUI(player) {
   }
 
   function onKey(event) {
+    if (!picker.hidden) {
+      onPickerKey(event);
+      return;
+    }
+    if (!menu.hidden && onMenuKey(event)) return;
     if (event.key === "Escape") {
       if (!modal.hidden) closeModal();
-      else if (!menu.hidden) closeMenu();
+      else if (!menu.hidden) closeMenu(true);
       else if (!now.hidden) closeNow();
       else if (document.body.classList.contains("side-open")) closeSide();
       else if (!drawer.hidden) openDrawer(drawerMode);
@@ -1336,34 +1411,67 @@ export function createUI(player) {
     }
   }
 
-  function closeMenu() {
+  function closeMenu(restoreFocus = false) {
+    if (menu.hidden) return;
     menu.hidden = true;
     menuTrack = null;
+    if (restoreFocus && menuOpener && document.contains(menuOpener)) menuOpener.focus({ preventScroll: true });
+    menuOpener = null;
+  }
+
+  function menuItems() {
+    return [...menu.querySelectorAll("[role='menuitem']")];
+  }
+
+  // Flechas, Inicio/Fin y Tab dentro del menú ···. Devuelve true si atendió la tecla.
+  function onMenuKey(event) {
+    const items = menuItems();
+    const index = items.indexOf(document.activeElement);
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      const step = event.key === "ArrowDown" ? 1 : -1;
+      items[(index + step + items.length) % items.length]?.focus();
+      return true;
+    }
+    if (event.key === "Home" || event.key === "End") {
+      event.preventDefault();
+      (event.key === "Home" ? items[0] : items[items.length - 1])?.focus();
+      return true;
+    }
+    if (event.key === "Tab") {
+      closeMenu(true);
+      return false;
+    }
+    return false;
   }
 
   function openMenu(button, track) {
     menuTrack = track;
+    menuOpener = button;
     menuPlaylistId = button.dataset.playlist || "";
     const id = esc(track.id);
+    const item = (action, label) => `<button type="button" role="menuitem" data-action="${action}" data-id="${id}">${label}</button>`;
     const remove = menuPlaylistId
-      ? `<button type="button" data-action="remove-from-list" data-id="${id}" data-playlist="${menuPlaylistId}">Quitar de esta lista</button>`
+      ? `<button type="button" role="menuitem" data-action="remove-from-list" data-id="${id}" data-playlist="${esc(menuPlaylistId)}">Quitar de esta playlist</button>`
       : "";
     const libraryLinks = track.source === "device"
-      ? `<button type="button" data-action="add-to-playlist" data-id="${id}">Agregar a una lista</button>
+      ? `${item("add-to-playlist", `${ADD_ICON}Agregar a playlist`)}
       ${remove}
-      <a href="${equipoHash(track.folder || "")}">Abrir carpeta</a>`
-      : `<button type="button" data-action="add-to-playlist" data-id="${id}">Agregar a una lista</button>
+      <a role="menuitem" href="${equipoHash(track.folder || "")}">Abrir carpeta</a>`
+      : `${item("add-to-playlist", `${ADD_ICON}Agregar a playlist`)}
       ${remove}
-      ${track.source === "user" ? `<button type="button" data-action="delete-upload" data-id="${id}">Eliminar archivo</button>` : ""}
-      <a href="#/album/${track.album_id}">Ir al álbum</a>
-      <a href="#/artist/${track.artist_id}">Ir al artista</a>`;
+      ${track.source === "user" ? item("delete-upload", "Eliminar archivo") : ""}
+      <a role="menuitem" href="#/album/${track.album_id}">Ir al álbum</a>
+      <a role="menuitem" href="#/artist/${track.artist_id}">Ir al artista</a>`;
     menu.innerHTML = `
-      <button type="button" data-action="play-now" data-id="${id}">Reproducir</button>
-      <button type="button" data-action="play-next" data-id="${id}">Reproducir a continuación</button>
-      <button type="button" data-action="enqueue" data-id="${id}">Agregar a la cola</button>
+      ${item("play-now", "Reproducir")}
+      ${item("play-next", "Reproducir a continuación")}
+      ${item("enqueue", "Agregar a la cola")}
       ${libraryLinks}
     `;
+    menu.setAttribute("aria-label", `Opciones de ${track.title}`);
     menu.hidden = false;
+    menuItems()[0]?.focus({ preventScroll: true });
     const rect = button.getBoundingClientRect();
     const width = 240;
     const left = Math.min(rect.left, window.innerWidth - width - 12);
@@ -1391,7 +1499,6 @@ export function createUI(player) {
     const wasOpen = !modal.hidden;
     modal.hidden = true;
     modalSubmit = null;
-    pendingLibrary = null;
     if (wasOpen && modalFocus && document.contains(modalFocus)) modalFocus.focus({ preventScroll: true });
     modalFocus = null;
   }
@@ -1422,41 +1529,330 @@ export function createUI(player) {
     });
   }
 
-  function playlistToast(result) {
-    const name = result.playlist_name;
-    if (result.added && result.skipped) return `${result.added} agregadas a ${name}. ${result.skipped} ya estaban.`;
-    if (result.added === 1) return `1 canción agregada a ${name}`;
-    if (result.added) return `${result.added} canciones agregadas a ${name}`;
-    return `Esas pistas ya están en ${name}`;
+  // ---------- Agregar a playlist ----------
+
+  function pickerBody(state) {
+    if (state.source) return { source: state.source };
+    if (state.paths) return { paths: state.paths };
+    return { keys: state.keys };
   }
 
-  async function saveToPlaylist(playlistId, pending) {
-    if (pending.kind === "folder" || pending.track?.source === "device") {
-      const path = pending.kind === "folder" ? pending.path : pending.track.id;
-      return playlistToast(await api.equipoPlaylist(path, playlistId));
+  // Abre el selector. state: { subtitle, keys | paths | source, single?: pista, exclude?: id de lista }
+  async function openPicker(state) {
+    closeMenu();
+    hideToast();
+    if (picker.hidden) pickerFocus = menuOpener && document.contains(menuOpener) ? menuOpener : document.activeElement;
+    const token = {};
+    pickerState = { ...state, lists: [], token };
+    document.getElementById("picker-sub").textContent = state.subtitle;
+    pickerSearch.value = "";
+    pickerNote.hidden = true;
+    pickerCreate.hidden = true;
+    pickerNew.hidden = false;
+    pickerList.innerHTML = `<li class="picker-empty">Cargando tus playlists…</li>`;
+    picker.hidden = false;
+    document.body.classList.add("picker-open");
+    requestAnimationFrame(() => picker.classList.add("is-open"));
+    if (coarseQuery.matches) pickerNew.focus({ preventScroll: true });
+    else pickerSearch.focus({ preventScroll: true });
+    try {
+      const params = {};
+      if (state.single?.source === "device") params.path = state.single.id;
+      else if (state.single) params.track_id = state.single.id;
+      const lists = await api.myPlaylists(params);
+      if (!pickerState || pickerState.token !== token) return;
+      pickerState.lists = lists.filter((list) => String(list.id) !== String(state.exclude ?? ""));
+      paintPicker();
+    } catch (error) {
+      if (pickerState?.token === token) pickerList.innerHTML = `<li class="picker-empty">${esc(error.message)}</li>`;
     }
-    await api.addTrack(playlistId, pending.track.id);
-    return "Agregada a la lista";
   }
 
-  async function openLibraryModal(pending) {
-    pendingLibrary = pending;
-    const lists = (await api.playlists()).filter((item) => !item.editorial);
-    const lead = pending.kind === "folder"
-      ? `${pending.count} ${pending.count === 1 ? "pista" : "pistas"} de «${esc(pending.name)}»`
-      : `«${esc(pending.track.title)}»`;
-    openModal({
-      title: "Agregar a mi lista",
-      confirm: "Cerrar",
-      body: `
-        <p class="lead">${lead}</p>
-        <div class="pick-list">
-          ${lists.map((item) => `<button type="button" data-action="pick-playlist" data-id="${item.id}">${esc(item.name)}</button>`).join("") || `<p class="empty">Aún no tienes listas. Crea una y se agregan ahí.</p>`}
-        </div>
-        <button type="button" class="btn ghost" data-action="create-playlist">Crear lista</button>
-      `,
-      onSubmit: async () => closeModal(),
+  function paintPicker() {
+    if (!pickerState) return;
+    const raw = pickerSearch.value.trim();
+    const query = fold(raw);
+    const all = pickerState.lists;
+    const lists = all.filter((list) => !query || fold(list.name).includes(query));
+    if (!all.length) {
+      pickerList.innerHTML = `<li class="picker-empty">Aún no tienes playlists. Crea la primera con «Nueva playlist».</li>`;
+      return;
+    }
+    if (!lists.length) {
+      pickerList.innerHTML = `<li class="picker-empty">Ninguna playlist se llama «${esc(raw)}».</li>`;
+      return;
+    }
+    pickerList.innerHTML = lists.map((list) => {
+      const has = Boolean(pickerState.single && list.contains);
+      return `<li>
+        <button type="button" class="picker-item ${has ? "has-it" : ""}" data-pick="${list.id}">
+          <img src="${esc(list.cover_url)}" alt="" loading="lazy">
+          <span class="picker-text">
+            <strong>${esc(list.name)}</strong>
+            <small>${plural(list.track_count, "canción", "canciones")}${has ? " · Ya está aquí" : ""}</small>
+          </span>
+          ${has ? `<span class="picker-check" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m5 12 5 5 9-10"/></svg></span>` : ""}
+        </button>
+      </li>`;
+    }).join("");
+  }
+
+  function closePicker() {
+    if (picker.hidden) return;
+    picker.classList.remove("is-open");
+    picker.hidden = true;
+    document.body.classList.remove("picker-open");
+    pickerState = null;
+    const back = pickerFocus;
+    pickerFocus = null;
+    if (back && document.contains(back) && back.offsetParent !== null) back.focus({ preventScroll: true });
+  }
+
+  function pickerBusy(on) {
+    picker.classList.toggle("is-busy", on);
+    picker.querySelector(".picker").setAttribute("aria-busy", String(on));
+    picker.querySelectorAll(".picker-item, .picker-new, .picker-create button").forEach((button) => {
+      button.disabled = on;
     });
+  }
+
+  function defaultPlaylistName() {
+    const names = new Set((pickerState?.lists || []).map((list) => fold(list.name)));
+    let number = (pickerState?.lists.length || 0) + 1;
+    while (names.has(fold(`Mi playlist n.º ${number}`))) number += 1;
+    return `Mi playlist n.º ${number}`;
+  }
+
+  function startCreate() {
+    if (!pickerState) return;
+    pickerNew.hidden = true;
+    pickerCreate.hidden = false;
+    pickerNote.hidden = true;
+    const input = pickerCreate.elements.name;
+    input.value = defaultPlaylistName();
+    input.focus();
+    input.select();
+  }
+
+  function cancelCreate() {
+    pickerCreate.hidden = true;
+    pickerNew.hidden = false;
+    pickerNew.focus();
+  }
+
+  async function submitCreate() {
+    const state = pickerState;
+    if (!state || picker.classList.contains("is-busy")) return;
+    const input = pickerCreate.elements.name;
+    const name = input.value.trim();
+    if (!name) {
+      input.focus();
+      return;
+    }
+    pickerBusy(true);
+    try {
+      const saved = await api.createPlaylist({ name, ...pickerBody(state) });
+      closePicker();
+      await paintSide();
+      addedToast(saved.result, { created: true });
+      refreshIfShowing(saved.id);
+    } catch (error) {
+      showToast(error.message);
+    } finally {
+      pickerBusy(false);
+    }
+  }
+
+  async function pickPlaylist(id) {
+    const state = pickerState;
+    if (!state || picker.classList.contains("is-busy")) return;
+    const list = state.lists.find((item) => String(item.id) === String(id));
+    if (!list) return;
+    if (state.single && list.contains) {
+      pickerNote.innerHTML = `<p>«${esc(state.single.title)}» ya está en «${esc(list.name)}». Una playlist no repite canciones.</p>
+        <div class="picker-note-actions">
+          <button type="button" class="btn ghost small" data-note="skip">Omitir</button>
+          <button type="button" class="btn solid small" data-note="view" data-id="${list.id}">Ver playlist</button>
+        </div>`;
+      pickerNote.hidden = false;
+      pickerNote.querySelector("[data-note='skip']").focus();
+      return;
+    }
+    pickerBusy(true);
+    try {
+      const result = await api.addToPlaylist(list.id, pickerBody(state));
+      closePicker();
+      addedToast(result);
+      refreshIfShowing(result.playlist_id);
+    } catch (error) {
+      showToast(error.message);
+    } finally {
+      pickerBusy(false);
+    }
+  }
+
+  function addedToast(result, options = {}) {
+    const name = `«${result.playlist_name}»`;
+    const see = { label: "Ver", run: () => go(`#/playlist/${result.playlist_id}`) };
+    if (!result.added && !options.created) {
+      showToast(result.skipped > 1 ? `Ya estaban todas en ${name}` : `Ya estaba en ${name}`, [see]);
+      return;
+    }
+    const undo = {
+      label: "Deshacer",
+      run: async () => {
+        if (options.created) {
+          await api.deletePlaylist(result.playlist_id);
+          await paintSide();
+          const [page, pageId] = parts();
+          if (page === "playlist" && String(pageId) === String(result.playlist_id)) go("#/library");
+          else refreshIfShowing(result.playlist_id);
+          showToast("Listo, se deshizo");
+          return;
+        }
+        await api.removeFromPlaylist(result.playlist_id, result.added_keys);
+        refreshIfShowing(result.playlist_id);
+        showToast("Listo, se deshizo");
+      },
+    };
+    let text;
+    if (options.created) text = result.added > 1 ? `Playlist ${name} creada con ${result.added} canciones` : `Agregada a ${name}`;
+    else text = result.added === 1 ? `Agregada a ${name}` : `${result.added} canciones agregadas a ${name}`;
+    if (result.skipped) text += ` · ${result.skipped} ya ${result.skipped === 1 ? "estaba" : "estaban"}`;
+    showToast(text, [undo, see]);
+  }
+
+  // Vuelve a pintar la vista si muestra esa lista (o la biblioteca), sin saltar al inicio.
+  async function refreshIfShowing(playlistId) {
+    const [page, pageId] = parts();
+    if (!((page === "playlist" && String(pageId) === String(playlistId)) || page === "library")) return;
+    const y = window.scrollY;
+    const inner = view.scrollTop;
+    await route();
+    view.scrollTop = inner;
+    window.scrollTo(0, y);
+  }
+
+  function addTrackToPlaylist(track) {
+    if (!track) return;
+    remember([track]);
+    return openPicker({
+      subtitle: track.artist ? `«${track.title}» · ${track.artist}` : `«${track.title}»`,
+      keys: [trackKey(track)],
+      single: track,
+    });
+  }
+
+  async function addCollection(button) {
+    const kind = button.dataset.kind;
+    const rows = [...view.querySelectorAll(".tracklist .track")];
+    if (!rows.length) {
+      showToast("No hay canciones para agregar");
+      return;
+    }
+    const title = view.querySelector(".sheet h1")?.textContent.trim() || "";
+    const subtitle = `${plural(rows.length, "canción", "canciones")} de «${title}»`;
+    if (kind === "likes") {
+      const keys = rows.map((row) => trackFromRow(row)).filter(Boolean).map(trackKey);
+      await openPicker({ subtitle, keys });
+      return;
+    }
+    const id = Number(button.dataset.id);
+    await openPicker({ subtitle, source: { type: kind, id }, exclude: kind === "playlist" ? id : null });
+  }
+
+  function onPickerKey(event) {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      if (!pickerCreate.hidden) cancelCreate();
+      else if (!pickerNote.hidden) {
+        pickerNote.hidden = true;
+        pickerList.querySelector(".picker-item")?.focus();
+      } else closePicker();
+      return;
+    }
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      const items = [pickerNew, ...pickerList.querySelectorAll(".picker-item")].filter((el) => !el.hidden && el.offsetParent !== null);
+      if (!items.length) return;
+      const current = items.indexOf(document.activeElement);
+      if (document.activeElement === pickerSearch && event.key === "ArrowDown") {
+        event.preventDefault();
+        items[0].focus();
+        return;
+      }
+      if (current === -1) return;
+      event.preventDefault();
+      const next = current + (event.key === "ArrowDown" ? 1 : -1);
+      if (next < 0) pickerSearch.focus();
+      else items[Math.min(next, items.length - 1)].focus();
+      return;
+    }
+    trapFocus(event, picker);
+  }
+
+  // ---------- Ordenar una lista propia ----------
+
+  function renumber(list) {
+    [...list.querySelectorAll(".track")].forEach((row, index) => {
+      const num = row.querySelector(".num");
+      if (num) num.textContent = String(index + 1);
+      row.querySelectorAll("[data-index]").forEach((el) => {
+        el.dataset.index = String(index);
+      });
+    });
+  }
+
+  function toggleSorting(button) {
+    const list = view.querySelector(".tracklist");
+    if (!list) return;
+    const on = !list.classList.contains("is-sorting");
+    list.classList.toggle("is-sorting", on);
+    button.setAttribute("aria-pressed", String(on));
+    button.textContent = on ? "Listo" : "Ordenar";
+    button.classList.toggle("solid", on);
+    button.classList.toggle("ghost", !on);
+    if (on) announce("Modo ordenar: usa las flechas de cada canción para subirla o bajarla.");
+    else {
+      if (orderTimer) flushOrder();
+      announce("Orden guardado.");
+    }
+  }
+
+  function moveRow(button, delta) {
+    const row = button.closest(".track");
+    const list = row?.parentElement;
+    if (!row || !list) return;
+    const sibling = delta < 0 ? row.previousElementSibling : row.nextElementSibling;
+    if (!sibling) {
+      announce(delta < 0 ? "Ya está primera." : "Ya está última.");
+      return;
+    }
+    if (delta < 0) list.insertBefore(row, sibling);
+    else list.insertBefore(sibling, row);
+    renumber(list);
+    button.focus({ preventScroll: true });
+    row.scrollIntoView({ block: "nearest" });
+    const rows = [...list.querySelectorAll(".track")];
+    announce(`${trackFromRow(row)?.title || "Canción"}: posición ${rows.indexOf(row) + 1} de ${rows.length}`);
+    orderPlaylist = list.dataset.playlist;
+    clearTimeout(orderTimer);
+    orderTimer = setTimeout(() => flushOrder(), 700);
+  }
+
+  async function flushOrder() {
+    clearTimeout(orderTimer);
+    orderTimer = 0;
+    const id = orderPlaylist;
+    orderPlaylist = null;
+    const list = view.querySelector(`.tracklist[data-playlist="${id}"]`);
+    if (!id || !list) return;
+    const keys = [...list.querySelectorAll(".track")].map((row) => trackFromRow(row)).filter(Boolean).map(trackKey);
+    try {
+      await api.reorderPlaylist(id, keys);
+    } catch (error) {
+      showToast(error.message);
+      refreshIfShowing(id);
+    }
   }
 
   async function onViewClick(event) {
@@ -1487,12 +1883,23 @@ export function createUI(player) {
       return;
     }
     if (action === "add-equipo") {
-      await openLibraryModal({
-        kind: "folder",
-        path: target.dataset.path,
-        name: target.dataset.name,
-        count: Number(target.dataset.count || 0),
+      const count = Number(target.dataset.count || 0);
+      await openPicker({
+        subtitle: `${plural(count, "pista", "pistas")} de «${target.dataset.name}»`,
+        paths: [target.dataset.path],
       });
+      return;
+    }
+    if (action === "add-collection") {
+      await addCollection(target);
+      return;
+    }
+    if (action === "sort-playlist") {
+      toggleSorting(target);
+      return;
+    }
+    if (action === "move-up" || action === "move-down") {
+      moveRow(target, action === "move-up" ? -1 : 1);
       return;
     }
     if (action === "menu") {
@@ -1673,14 +2080,15 @@ export function createUI(player) {
       if (track) openMenu(row.querySelector("[data-action='menu']") || row, track);
     });
     document.addEventListener("click", (event) => {
-      if (!menu.hidden && !menu.contains(event.target) && !event.target.closest("[data-action='menu']")) closeMenu();
+      if (!menu.hidden && !menu.contains(event.target) && !event.target.closest("[data-action='menu'], [data-action='queue-menu']")) closeMenu();
     });
     menu.addEventListener("click", async (event) => {
       const target = event.target.closest("[data-action], a");
       if (!target) return;
       const action = target.dataset.action;
       const track = menuTrack;
-      closeMenu();
+      const opener = menuOpener;
+      closeMenu(!target.matches("a"));
       if (!action || !track) return;
       if (action === "play-now") await player.playContext([track], 0);
       if (action === "play-next") {
@@ -1692,13 +2100,22 @@ export function createUI(player) {
         showToast("Agregada a la cola");
       }
       if (action === "add-to-playlist") {
-        await openLibraryModal({ kind: "track", track });
+        menuOpener = opener;
+        await addTrackToPlaylist(track);
       }
       if (action === "remove-from-list") {
-        if (track.source === "device") await api.removeDeviceTrack(target.dataset.playlist, track.id);
-        else await api.removeTrack(target.dataset.playlist, track.id);
-        showToast("Quitada de la lista");
-        route();
+        const playlistId = target.dataset.playlist;
+        const key = trackKey(track);
+        const result = await api.removeFromPlaylist(playlistId, [key]);
+        await refreshIfShowing(playlistId);
+        showToast(`Quitada de «${result.playlist_name}»`, [{
+          label: "Deshacer",
+          run: async () => {
+            await api.addToPlaylist(playlistId, result.position == null ? { keys: [key] } : { keys: [key], position: result.position });
+            await refreshIfShowing(playlistId);
+            showToast(`Volvió a «${result.playlist_name}»`);
+          },
+        }]);
       }
       if (action === "delete-upload") {
         await withAdmin(() => confirmDelete(track)).catch((error) => showToast(error.message));
@@ -1716,19 +2133,51 @@ export function createUI(player) {
       event.returnValue = "";
     });
     document.getElementById("modal-cancel").addEventListener("click", closeModal);
-    modal.addEventListener("click", async (event) => {
+    modal.addEventListener("click", (event) => {
       if (event.target === modal) closeModal();
-      const pick = event.target.closest("[data-action='pick-playlist']");
-      if (pick && pendingLibrary) {
-        const message = await saveToPlaylist(pick.dataset.id, pendingLibrary);
-        showToast(message);
-        closeModal();
+    });
+    picker.addEventListener("click", (event) => {
+      if (event.target === picker) {
+        closePicker();
+        return;
       }
-      if (event.target.closest("[data-action='create-playlist']")) {
-        const pending = pendingLibrary;
-        pendingLibrary = null;
-        playlistForm(null, { attach: pending ? (saved) => saveToPlaylist(saved.id, pending) : null });
+      const pick = event.target.closest("[data-pick]");
+      if (pick) {
+        pickPlaylist(pick.dataset.pick);
+        return;
       }
+      const note = event.target.closest("[data-note]");
+      if (note?.dataset.note === "skip") {
+        pickerNote.hidden = true;
+        pickerList.querySelector(".picker-item")?.focus();
+      }
+      if (note?.dataset.note === "view") {
+        const id = note.dataset.id;
+        closePicker();
+        go(`#/playlist/${id}`);
+      }
+    });
+    document.getElementById("picker-close").addEventListener("click", closePicker);
+    pickerNew.addEventListener("click", startCreate);
+    document.getElementById("picker-create-cancel").addEventListener("click", cancelCreate);
+    pickerCreate.addEventListener("submit", (event) => {
+      event.preventDefault();
+      submitCreate();
+    });
+    pickerSearch.addEventListener("input", paintPicker);
+    pickerSearch.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter") return;
+      event.preventDefault();
+      const only = pickerList.querySelectorAll(".picker-item");
+      if (only.length === 1) only[0].click();
+    });
+    toast.addEventListener("pointerenter", () => clearTimeout(toastTimer));
+    toast.addEventListener("focusin", () => clearTimeout(toastTimer));
+    toast.addEventListener("pointerleave", () => {
+      if (!toast.hidden) toastTimer = setTimeout(hideToast, 3000);
+    });
+    toast.addEventListener("focusout", () => {
+      if (!toast.hidden) toastTimer = setTimeout(hideToast, 3000);
     });
     document.getElementById("modal-form").addEventListener("submit", async (event) => {
       event.preventDefault();
@@ -1744,6 +2193,10 @@ export function createUI(player) {
     document.getElementById("p-next").addEventListener("click", () => player.next());
     document.getElementById("p-shuffle").addEventListener("click", () => player.toggleShuffle());
     document.getElementById("p-repeat").addEventListener("click", () => player.cycleRepeat());
+    document.getElementById("p-add").addEventListener("click", () => {
+      const track = player.current();
+      if (track) addTrackToPlaylist(track).catch((error) => showToast(error.message));
+    });
     document.getElementById("p-like").addEventListener("click", () => {
       const track = player.current();
       if (track) toggleLike(track.id).catch((error) => showToast(error.message));
@@ -1786,6 +2239,10 @@ export function createUI(player) {
       if (action === "like") {
         const track = player.current();
         if (track) toggleLike(track.id).catch((error) => showToast(error.message));
+      }
+      if (action === "add") {
+        const track = player.current();
+        if (track) addTrackToPlaylist(track).catch((error) => showToast(error.message));
       }
       if (action === "queue") {
         closeNow();
@@ -1833,6 +2290,14 @@ export function createUI(player) {
       if (play) player.playQueueIndex(Number(play.dataset.index));
       const remove = event.target.closest("[data-action='queue-remove']");
       if (remove) player.removeQueued(Number(remove.dataset.index));
+      const more = event.target.closest("[data-action='queue-menu']");
+      if (more) {
+        const track = player.snapshot().queue[Number(more.dataset.index)];
+        if (track) {
+          remember([track]);
+          openMenu(more, track);
+        }
+      }
     });
     drawerBody.addEventListener("change", (event) => {
       if (event.target.id === "autoplay") player.setAutoplay(event.target.checked);
