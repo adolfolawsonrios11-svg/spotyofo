@@ -1,6 +1,7 @@
 #!/bin/bash
 # Instalación de producción en ofoserv. El código ya está en /var/www/spotyofo.
 set -euo pipefail
+export DEBIAN_FRONTEND=noninteractive
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 ENV_FILE=/etc/spotyofo.env
@@ -50,6 +51,8 @@ sudo cp "$ROOT/deploy/spotyofo.service" /etc/systemd/system/spotyofo.service
 sudo systemctl daemon-reload
 sudo systemctl enable --now spotyofo
 sudo systemctl restart spotyofo
+curl -fsS http://127.0.0.1:5050/api/health
+echo
 
 sudo python3 - <<'PY'
 from pathlib import Path
