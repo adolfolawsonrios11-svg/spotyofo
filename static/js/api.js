@@ -1,15 +1,35 @@
+// Token CSRF de la sesión (lo entrega /api/me). Va en toda petición que cambia datos.
+let csrf = "";
+let onSessionEnd = null;
+
+export function setCsrf(token) {
+  csrf = String(token || "");
+}
+
+export function onSessionExpired(handler) {
+  onSessionEnd = handler;
+}
+
+function sessionEnded(status, data) {
+  if (status === 401 && (data?.needs === "login" || data?.needs === "setup") && onSessionEnd) onSessionEnd(data.needs);
+  if (status === 403 && data?.needs === "password") location.assign("/account/password");
+}
+
 async function request(url, options = {}) {
   const response = await fetch(url, {
+    credentials: "same-origin",
     ...options,
     headers: {
       Accept: "application/json",
       "X-Requested-With": "SpotyOFO",
+      ...(csrf ? { "X-CSRF-Token": csrf } : {}),
       ...(options.body ? { "Content-Type": "application/json" } : {}),
       ...(options.headers || {}),
     },
   });
   const data = await response.json().catch(() => ({}));
   if (!response.ok) {
+    sessionEnded(response.status, data);
     const error = new Error(data.error || "No se pudo completar la acción");
     error.status = response.status;
     error.data = data;
@@ -24,6 +44,7 @@ function uploadFile(file, onProgress) {
     xhr.open("POST", "/api/uploads");
     xhr.setRequestHeader("Accept", "application/json");
     xhr.setRequestHeader("X-Requested-With", "SpotyOFO");
+    if (csrf) xhr.setRequestHeader("X-CSRF-Token", csrf);
     xhr.upload.addEventListener("progress", (event) => {
       if (event.lengthComputable && onProgress) onProgress(event.loaded / event.total);
     });
@@ -38,6 +59,7 @@ function uploadFile(file, onProgress) {
         resolve(data);
         return;
       }
+      sessionEnded(xhr.status, data);
       const error = new Error(data.error || `No se pudo subir (${xhr.status})`);
       error.status = xhr.status;
       error.data = data;
@@ -79,11 +101,11 @@ export const api = {
   play: (trackId) => request("/api/plays", { method: "POST", body: JSON.stringify({ track_id: trackId }) }),
   related: (id) => request(`/api/tracks/${id}/related`),
   search: (q) => request(`/api/search?q=${encodeURIComponent(q)}`),
-  auth: () => request("/api/auth"),
-  authSetup: (pin, confirm) => request("/api/auth/setup", { method: "POST", body: JSON.stringify({ pin, confirm }) }),
-  authLogin: (pin) => request("/api/auth/login", { method: "POST", body: JSON.stringify({ pin }) }),
-  authChange: (current, pin, confirm) => request("/api/auth/change", { method: "POST", body: JSON.stringify({ current, pin, confirm }) }),
-  authLogout: () => request("/api/auth/logout", { method: "POST" }),
+  me: () => request("/api/me"),
+  logout: () => request("/api/auth/logout", { method: "POST" }),
+  adminUsers: () => request("/api/admin/users"),
+  adminAction: (id, action) => request(`/api/admin/users/${id}/${action}`, { method: "POST" }),
+  adminDelete: (id) => request(`/api/admin/users/${id}`, { method: "DELETE" }),
   equipo: (path = "") => request(`/api/equipo?path=${encodeURIComponent(path)}`),
   equipoLike: (path, shownLiked = false) => request("/api/equipo/likes", { method: "POST", body: JSON.stringify({ path, shown_liked: Boolean(shownLiked) }) }),
   equipoPlaylist: (path, playlistId) => request("/api/equipo/playlists", { method: "POST", body: JSON.stringify({ path, playlist_id: Number(playlistId) }) }),

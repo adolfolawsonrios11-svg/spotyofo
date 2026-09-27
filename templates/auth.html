@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#090a0d">
+  <meta name="color-scheme" content="dark">
+  <meta name="robots" content="noindex, nofollow">
+  {%- set titles = {
+    "login": "Iniciar sesión",
+    "register": "Pedir acceso",
+    "registered": "Solicitud enviada",
+    "setup": "Crear administrador",
+    "password": "Cambiar contraseña",
+    "closed": "Registro cerrado",
+    "error": "Algo salió mal",
+  } %}
+  <title>{{ titles.get(mode, "SpotyOFO") }} · SpotyOFO</title>
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/static/icons/apple-touch-icon.png" sizes="180x180">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@360;480;580;700&family=Syne:wght@700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/css/auth.css?v={{ asset_v or '1' }}">
+</head>
+<body>
+  <main class="auth" id="main">
+    <div class="auth-card">
+      <a class="auth-brand" href="/" aria-label="SpotyOFO, inicio">
+        <span class="mark" aria-hidden="true"></span>
+        <span>SpotyOFO</span>
+      </a>
+      <h1>{{ titles.get(mode, "SpotyOFO") }}</h1>
+
+      {% if error %}<p class="auth-msg is-error" role="alert" id="form-error">{{ error }}</p>{% endif %}
+      {% if notice %}<p class="auth-msg is-ok" role="status">{{ notice }}</p>{% endif %}
+
+      {% if mode == "login" %}
+        <p class="auth-lead">Entra con tu cuenta para escuchar tu música, tus listas y tus Me gusta.</p>
+        <form method="post" action="/login" class="auth-form" novalidate {% if error %}aria-describedby="form-error"{% endif %}>
+          <input type="hidden" name="csrf_token" value="{{ csrf }}">
+          <input type="hidden" name="next" value="{{ next or '/' }}">
+          <label for="username">Usuario</label>
+          <input id="username" name="username" value="{{ username or '' }}" autocomplete="username" autocapitalize="none" spellcheck="false" maxlength="32" required {% if not username %}autofocus{% endif %}>
+          <label for="password">Contraseña</label>
+          <input id="password" name="password" type="password" autocomplete="current-password" maxlength="128" required {% if username %}autofocus{% endif %}>
+          <button type="submit" class="btn solid">Entrar</button>
+        </form>
+        {% if registration_open %}<p class="auth-alt">¿No tienes cuenta? <a href="/register">Pide acceso</a></p>{% endif %}
+        <p class="auth-fine">¿Olvidaste tu contraseña? Pídele al administrador que la restablezca.</p>
+
+      {% elif mode == "register" %}
+        <p class="auth-lead">Crea tu cuenta. El administrador debe aprobarla antes de que puedas entrar.</p>
+        <form method="post" action="/register" class="auth-form" novalidate {% if error %}aria-describedby="form-error"{% endif %}>
+          <input type="hidden" name="csrf_token" value="{{ csrf }}">
+          <label for="username">Usuario</label>
+          <input id="username" name="username" value="{{ username or '' }}" autocomplete="username" autocapitalize="none" spellcheck="false" minlength="3" maxlength="32" pattern="[a-z0-9][a-z0-9._\-]{2,31}" aria-describedby="username-hint" required autofocus>
+          <small id="username-hint">3 a 32 caracteres: minúsculas, números, punto, guion o guion bajo.</small>
+          <label for="display_name">Nombre para mostrar <span class="opt">(opcional)</span></label>
+          <input id="display_name" name="display_name" value="{{ display_name or '' }}" autocomplete="name" maxlength="60">
+          <label for="password">Contraseña</label>
+          <input id="password" name="password" type="password" autocomplete="new-password" minlength="{{ min_password }}" maxlength="128" aria-describedby="password-hint" required>
+          <small id="password-hint">Al menos {{ min_password }} caracteres. Una frase fácil de recordar sirve.</small>
+          <label for="confirm">Repite la contraseña</label>
+          <input id="confirm" name="confirm" type="password" autocomplete="new-password" minlength="{{ min_password }}" maxlength="128" required>
+          <button type="submit" class="btn solid">Pedir acceso</button>
+        </form>
+        <p class="auth-alt">¿Ya tienes cuenta? <a href="/login">Inicia sesión</a></p>
+
+      {% elif mode == "registered" %}
+        <p class="auth-lead">Listo, <strong>{{ username }}</strong>. Tu solicitud quedó <strong>pendiente</strong>: el administrador tiene que aprobarla. Cuando lo haga podrás entrar con tu usuario y contraseña.</p>
+        <a class="btn ghost wide" href="/login">Volver a iniciar sesión</a>
+
+      {% elif mode == "setup" %}
+        <p class="auth-lead">Primera vez: crea la cuenta de <strong>administrador principal</strong>. Tus listas, Me gusta e historial actuales pasarán a esta cuenta.</p>
+        <form method="post" action="/setup" class="auth-form" novalidate {% if error %}aria-describedby="form-error"{% endif %}>
+          <input type="hidden" name="csrf_token" value="{{ csrf }}">
+          {% if proof == "pin" %}
+            <label for="proof">PIN actual de SpotyOFO</label>
+            <input id="proof" name="proof" type="password" inputmode="numeric" autocomplete="off" maxlength="12" aria-describedby="proof-hint" required autofocus>
+            <small id="proof-hint">El PIN que usabas para subir canciones. Demuestra que eres el dueño.</small>
+          {% else %}
+            <label for="proof">Código de configuración</label>
+            <input id="proof" name="proof" autocomplete="off" autocapitalize="characters" spellcheck="false" maxlength="32" aria-describedby="proof-hint" required autofocus>
+            <small id="proof-hint">Está en el archivo instance/setup_code.txt del servidor (solo lo puede leer el dueño).</small>
+          {% endif %}
+          <label for="username">Usuario del administrador</label>
+          <input id="username" name="username" value="{{ username or '' }}" autocomplete="username" autocapitalize="none" spellcheck="false" minlength="3" maxlength="32" aria-describedby="username-hint" required>
+          <small id="username-hint">3 a 32 caracteres: minúsculas, números, punto, guion o guion bajo.</small>
+          <label for="display_name">Nombre para mostrar <span class="opt">(opcional)</span></label>
+          <input id="display_name" name="display_name" value="{{ display_name or '' }}" autocomplete="name" maxlength="60">
+          <label for="password">Contraseña</label>
+          <input id="password" name="password" type="password" autocomplete="new-password" minlength="{{ min_password }}" maxlength="128" aria-describedby="password-hint" required>
+          <small id="password-hint">Al menos {{ min_password }} caracteres. Guárdala bien: nadie más la conoce.</small>
+          <label for="confirm">Repite la contraseña</label>
+          <input id="confirm" name="confirm" type="password" autocomplete="new-password" minlength="{{ min_password }}" maxlength="128" required>
+          <button type="submit" class="btn solid">Crear administrador</button>
+        </form>
+
+      {% elif mode == "password" %}
+        <p class="auth-lead">{% if forced %}El administrador te dio una contraseña temporal. Elige una nueva para seguir.{% else %}Elige una contraseña nueva. Se cerrarán tus sesiones en otros equipos.{% endif %}</p>
+        <form method="post" action="/account/password" class="auth-form" novalidate {% if error %}aria-describedby="form-error"{% endif %}>
+          <input type="hidden" name="csrf_token" value="{{ csrf }}">
+          <label for="current">{% if forced %}Contraseña temporal{% else %}Contraseña actual{% endif %}</label>
+          <input id="current" name="current" type="password" autocomplete="current-password" maxlength="128" required autofocus>
+          <label for="password">Contraseña nueva</label>
+          <input id="password" name="password" type="password" autocomplete="new-password" minlength="{{ min_password }}" maxlength="128" aria-describedby="password-hint" required>
+          <small id="password-hint">Al menos {{ min_password }} caracteres.</small>
+          <label for="confirm">Repite la contraseña nueva</label>
+          <input id="confirm" name="confirm" type="password" autocomplete="new-password" minlength="{{ min_password }}" maxlength="128" required>
+          <button type="submit" class="btn solid">Guardar contraseña</button>
+        </form>
+        <div class="auth-row">
+          {% if not forced %}<a class="btn ghost" href="/">Volver</a>{% endif %}
+          <form method="post" action="/logout"><input type="hidden" name="csrf_token" value="{{ csrf }}"><button type="submit" class="btn ghost">Cerrar sesión</button></form>
+        </div>
+
+      {% elif mode == "closed" %}
+        <p class="auth-lead">El registro de cuentas nuevas está cerrado. Pídele acceso al administrador.</p>
+        <a class="btn ghost wide" href="/login">Volver</a>
+
+      {% else %}
+        <p class="auth-lead">{{ message }}{% if code %} <span class="auth-code">(código {{ code }})</span>{% endif %}</p>
+        <a class="btn ghost wide" href="/">Ir al inicio</a>
+      {% endif %}
+    </div>
+  </main>
+</body>
+</html>

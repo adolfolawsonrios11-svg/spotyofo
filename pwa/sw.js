@@ -1,12 +1,12 @@
-/* SpotyOFO service worker. La versión la inyecta Flask al servir /sw.js. */
+/* SpotyOFO service worker. La versión la inyecta Flask al servir /sw.js.
+ * Cuentas: las respuestas de la API (datos de cada usuario) NUNCA se guardan en caché,
+ * y al cerrar sesión se borran todas las cachés de este sitio. */
 const VERSION = "__ASSET_V__";
 const SHELL_CACHE = `spotyofo-shell-${VERSION}`;
 const RUNTIME_CACHE = "spotyofo-runtime";
-const API_CACHE = "spotyofo-api";
+const OLD_CACHES = ["spotyofo-api"];
 const RUNTIME_LIMIT = 250;
-const API_LIMIT = 60;
 const SHELL = [
-  "/",
   "/manifest.webmanifest",
   "/static/favicon.svg",
   "/static/icons/icon-192.png",
@@ -25,7 +25,7 @@ self.addEventListener("activate", (event) => {
   event.waitUntil(
     caches.keys()
       .then((keys) => Promise.all(keys
-        .filter((key) => key.startsWith("spotyofo-shell") && key !== SHELL_CACHE)
+        .filter((key) => (key.startsWith("spotyofo-shell") && key !== SHELL_CACHE) || OLD_CACHES.includes(key))
         .map((key) => caches.delete(key))))
       .then(() => self.clients.claim()),
   );
@@ -37,11 +37,15 @@ async function trim(cacheName, limit) {
   for (let i = 0; i < keys.length - limit; i += 1) await cache.delete(keys[i]);
 }
 
+function cacheable(response) {
+  return response.ok && response.type === "basic" && !response.redirected;
+}
+
 async function networkFirst(request, cacheName, limit) {
   const cache = await caches.open(cacheName);
   try {
     const response = await fetch(request);
-    if (response.ok && response.type === "basic") {
+    if (cacheable(response)) {
       cache.put(request, response.clone()).then(() => limit && trim(cacheName, limit)).catch(() => {});
     }
     return response;
@@ -56,7 +60,7 @@ async function cacheFirst(request, cacheName, limit) {
   const cached = await caches.match(request);
   if (cached) return cached;
   const response = await fetch(request);
-  if (response.ok || response.type === "opaque") {
+  if (cacheable(response)) {
     const cache = await caches.open(cacheName);
     cache.put(request, response.clone()).then(() => trim(cacheName, limit)).catch(() => {});
   }
@@ -94,6 +98,8 @@ self.addEventListener("fetch", (event) => {
   if (url.pathname.startsWith("/static/audio/") || url.pathname === "/api/equipo/audio") return;
 
   if (request.mode === "navigate") {
+    // Solo la portada de la app se guarda (sin datos del usuario); login y demás van siempre a la red.
+    if (url.pathname !== "/") return;
     event.respondWith(
       networkFirst(request, SHELL_CACHE).catch(async () => (await caches.match("/")) || Response.error()),
     );
@@ -106,11 +112,8 @@ self.addEventListener("fetch", (event) => {
     return;
   }
 
-  // API de lectura: red primero, copia de respaldo para modo sin conexión.
-  if (url.pathname.startsWith("/api/")) {
-    event.respondWith(networkFirst(request, API_CACHE, API_LIMIT));
-    return;
-  }
+  // API: siempre a la red, sin copia (cada usuario ve solo sus datos).
+  if (url.pathname.startsWith("/api/")) return;
 
   // JS, CSS e íconos: red primero (siempre la versión nueva) con respaldo en caché.
   if (url.pathname.startsWith("/static/") || url.pathname === "/manifest.webmanifest") {
@@ -120,4 +123,7 @@ self.addEventListener("fetch", (event) => {
 
 self.addEventListener("message", (event) => {
   if (event.data === "skip-waiting") self.skipWaiting();
+  if (event.data === "logout") {
+    event.waitUntil(caches.keys().then((keys) => Promise.all(keys.map((key) => caches.delete(key)))));
+  }
 });

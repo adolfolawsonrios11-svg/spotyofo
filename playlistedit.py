@@ -7,6 +7,10 @@ transacción, así dos pestañas que agregan a la vez nunca repiten posición.
 
 Las claves de pista que viajan al navegador son «t:<id>» (catálogo o subida) y
 «d:<ruta relativa>» (archivo de la carpeta Música).
+
+Cuentas: cada lista propia tiene dueño (owner_id). Solo su dueño la ve y la edita; una
+lista ajena responde 404 (no se revela que existe). Las editoriales son de todos y de solo
+lectura. Los archivos de la carpeta Música (claves «d:») son solo para administradores.
 """
 
 from contextlib import contextmanager
@@ -38,14 +42,25 @@ def transaction(conn):
         conn.commit()
 
 
-def _lock(cur, playlist_id, editable=True):
-    cur.execute("SELECT id, name, editorial FROM playlists WHERE id = %s FOR UPDATE", (playlist_id,))
+def _lock(cur, playlist_id, user_id):
+    cur.execute("SELECT id, name, editorial, owner_id FROM playlists WHERE id = %s FOR UPDATE", (playlist_id,))
     row = cur.fetchone()
     if not row:
         raise PlaylistError("Lista no encontrada.", 404)
-    if editable and row["editorial"]:
+    if row["editorial"]:
         raise PlaylistError("Las listas editoriales están cerradas. Crea una lista tuya.", 403)
+    if row["owner_id"] != user_id:
+        raise PlaylistError("Lista no encontrada.", 404)
     return row
+
+
+def can_view(cur, playlist_id, user_id):
+    cur.execute("SELECT editorial, owner_id FROM playlists WHERE id = %s", (playlist_id,))
+    row = cur.fetchone()
+    return bool(row) and (bool(row["editorial"]) or row["owner_id"] == user_id)
+
+
+DEVICE_ONLY_ADMIN = "Los archivos de la carpeta Música del servidor son solo para el administrador."
 
 
 def _order(cur, playlist_id):
@@ -159,9 +174,13 @@ def _parse_int(value, message):
     return number
 
 
-def resolve_items(cur, body, target_id=None):
+def resolve_items(cur, body, target_id=None, user_id=None, allow_device=False):
     """Lee qué pistas agregar desde el cuerpo JSON. Devuelve [(kind, id)] sin repetidos, en orden."""
     items = []
+    if not allow_device and (body.get("paths") is not None or any(
+        str(key or "").startswith("d:") for key in (body.get("keys") or []) if isinstance(body.get("keys"), list)
+    )):
+        raise PlaylistError(DEVICE_ONLY_ADMIN, 403)
     if body.get("track_id") is not None:
         items += _catalog_ids(cur, [_parse_int(body.get("track_id"), "Falta la pista.")])
     if body.get("track_ids") is not None:
@@ -203,10 +222,11 @@ def resolve_items(cur, body, target_id=None):
         elif kind == "playlist":
             if target_id is not None and source_id == target_id:
                 raise PlaylistError("Elige una lista distinta a la de origen.")
-            cur.execute("SELECT id FROM playlists WHERE id = %s", (source_id,))
-            if not cur.fetchone():
+            if not can_view(cur, source_id, user_id):
                 raise PlaylistError("Lista de origen no encontrada.", 404)
-            items += [(row["kind"], row["id"]) for row in _order(cur, source_id)]
+            items += [
+                (row["kind"], row["id"]) for row in _order(cur, source_id) if allow_device or row["kind"] == "t"
+            ]
         else:
             raise PlaylistError("Origen no válido.")
     items = _unique(items)
@@ -217,7 +237,7 @@ def resolve_items(cur, body, target_id=None):
     return items
 
 
-def add_items(conn, playlist_id, body):
+def add_items(conn, playlist_id, body, user_id, allow_device=False):
     """Agrega pistas al final (o en «position»), sin repetir. Una sola transacción."""
     position = body.get("position")
     if position is not None:
@@ -228,8 +248,8 @@ def add_items(conn, playlist_id, body):
         if position < 0:
             raise PlaylistError("Posición no válida.")
     with transaction(conn), conn.cursor() as cur:
-        playlist = _lock(cur, playlist_id)
-        return _add_locked(cur, playlist, resolve_items(cur, body, playlist_id), position)
+        playlist = _lock(cur, playlist_id, user_id)
+        return _add_locked(cur, playlist, resolve_items(cur, body, playlist_id, user_id, allow_device), position)
 
 
 def _add_locked(cur, playlist, items, position=None):
@@ -267,13 +287,13 @@ def _add_locked(cur, playlist, items, position=None):
     }
 
 
-def create_with_items(conn, create_row, body):
+def create_with_items(conn, create_row, body, user_id, allow_device=False):
     """Crea la lista (create_row escribe la fila y la portada) y agrega las pistas, todo junto."""
     with transaction(conn), conn.cursor() as cur:
         new_id = create_row(cur)
-        playlist = _lock(cur, new_id)
+        playlist = _lock(cur, new_id, user_id)
         wants_items = any(body.get(key) is not None for key in ("track_id", "track_ids", "keys", "paths", "source"))
-        result = _add_locked(cur, playlist, resolve_items(cur, body, new_id)) if wants_items else {
+        result = _add_locked(cur, playlist, resolve_items(cur, body, new_id, user_id, allow_device)) if wants_items else {
             "added": 0, "skipped": 0, "added_keys": [], "playlist_id": new_id,
             "playlist_name": playlist["name"], "track_count": 0,
         }
@@ -297,12 +317,12 @@ def _key_items(cur, keys):
     return items
 
 
-def remove_items(conn, playlist_id, keys):
+def remove_items(conn, playlist_id, keys, user_id):
     """Quita pistas. Devuelve dónde estaba la primera, para poder deshacer."""
     if not isinstance(keys, list) or not keys or len(keys) > MAX_ITEMS_PER_REQUEST:
         raise PlaylistError("Elige qué pistas quitar.")
     with transaction(conn), conn.cursor() as cur:
-        playlist = _lock(cur, playlist_id)
+        playlist = _lock(cur, playlist_id, user_id)
         order = _order(cur, playlist_id)
         index = {(row["kind"], row["id"]): pos for pos, row in enumerate(order)}
         items = _key_items(cur, keys)
@@ -321,12 +341,12 @@ def remove_items(conn, playlist_id, keys):
         }
 
 
-def reorder(conn, playlist_id, keys):
+def reorder(conn, playlist_id, keys, user_id):
     """Guarda un orden nuevo. Debe incluir exactamente las mismas pistas que la lista."""
     if not isinstance(keys, list) or len(keys) > MAX_PLAYLIST_TRACKS:
         raise PlaylistError("Orden no válido.")
     with transaction(conn), conn.cursor() as cur:
-        playlist = _lock(cur, playlist_id)
+        playlist = _lock(cur, playlist_id, user_id)
         order = _order(cur, playlist_id)
         items = _key_items(cur, keys)
         by_item = {(row["kind"], row["id"]): row for row in order}
@@ -336,8 +356,8 @@ def reorder(conn, playlist_id, keys):
         return {"ok": True, "playlist_id": playlist_id, "playlist_name": playlist["name"], "track_count": len(order)}
 
 
-def own_playlists(conn, track_id=None, path=None):
-    """Listas propias (no editoriales) con cantidad de pistas y si ya contienen la pista dada."""
+def own_playlists(conn, user_id, track_id=None, path=None):
+    """Listas propias del usuario con cantidad de pistas y si ya contienen la pista dada."""
     with conn.cursor() as cur:
         cur.execute(
             """
@@ -345,9 +365,10 @@ def own_playlists(conn, track_id=None, path=None):
                    (SELECT COUNT(*) FROM playlist_tracks x WHERE x.playlist_id = p.id)
                  + (SELECT COUNT(*) FROM device_playlist_tracks y WHERE y.playlist_id = p.id) AS track_count
             FROM playlists p
-            WHERE p.editorial = 0
+            WHERE p.editorial = 0 AND p.owner_id = %s
             ORDER BY p.id DESC
-            """
+            """,
+            (user_id,),
         )
         rows = cur.fetchall()
         contains = set()

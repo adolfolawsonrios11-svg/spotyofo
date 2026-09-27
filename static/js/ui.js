@@ -1,5 +1,5 @@
-import { api } from "./api.js?v=20260927e";
-import { EQ_FREQS, EQ_LABELS, EQ_PRESETS } from "./player.js?v=20260927e";
+import { api, onSessionExpired, setCsrf } from "./api.js?v=20260927s";
+import { EQ_FREQS, EQ_LABELS, EQ_PRESETS } from "./player.js?v=20260927s";
 
 const GENRES = {
   "Dream pop": ["#12343a", "#8ef0d0"],
@@ -69,6 +69,10 @@ export function createUI(player) {
   let modalFocus = null;
   let installPrompt = null;
   let outputsLoaded = false;
+  let me = null;
+  let pendingTimer = 0;
+  const userBtn = document.getElementById("user-btn");
+  const userMenu = document.getElementById("user-menu");
   const now = document.getElementById("now");
   const appEl = document.getElementById("app");
   const desktopQuery = window.matchMedia("(min-width: 1101px)");
@@ -306,12 +310,11 @@ export function createUI(player) {
           <button type="button" class="btn solid" data-action="play-playlist" data-id="${featured.id}">Reproducir</button>
         </div>
       </section>` : ""}
-      ${data.recent.length ? rowSection("Escuchado en este equipo", data.recent.map((track, index) => trackRow(track, index, { album: true, context: "recent", contextId: "recent" })).join(""), true) : ""}
+      ${data.recent.length ? rowSection("Escuchado por ti", data.recent.map((track, index) => trackRow(track, index, { album: true, context: "recent", contextId: "recent" })).join(""), true) : ""}
       ${data.popular.length ? rowSection("Lo que más sonó aquí", data.popular.map((track, index) => trackRow(track, index, { album: true })).join(""), true) : ""}
-      ${section("Listas", data.playlists.map((item) => card(`#/playlist/${item.id}`, item.cover_url, item.name, item.editorial ? "Editorial" : "Tu lista", "play-playlist", item.id)).join(""))}
-      ${section("Álbumes", data.albums.map((item) => card(`#/album/${item.id}`, item.cover_url, item.title, albumSub(item), "play-album", item.id)).join(""))}
-      ${section("Artistas", data.artists.map((item) => card(`#/artist/${item.id}`, item.cover_url, item.name, `${item.genre} · ${item.origin}`, "play-artist", item.id)).join(""))}
-      <p class="catalog-note">Catálogo original compuesto para SpotyOFO. No es Spotify y no usa su música.</p>
+      ${data.playlists.length ? section("Listas", data.playlists.map((item) => card(`#/playlist/${item.id}`, item.cover_url, item.name, item.editorial ? "Editorial" : "Tu lista", "play-playlist", item.id)).join("")) : ""}
+      ${data.albums.length ? section("Álbumes", data.albums.map((item) => card(`#/album/${item.id}`, item.cover_url, item.title, albumSub(item), "play-album", item.id)).join("")) : ""}
+      ${data.artists.length ? section("Artistas", data.artists.map((item) => card(`#/artist/${item.id}`, item.cover_url, item.name, `${item.genre} · ${item.origin}`, "play-artist", item.id)).join("")) : ""}
     `;
   }
 
@@ -331,7 +334,7 @@ export function createUI(player) {
         const colors = GENRES[genre] || ["#1b1e27", "#2ef2c0"];
         return `<button type="button" class="genre" style="--a:${colors[0]};--b:${colors[1]}" data-action="genre" data-genre="${esc(genre)}">${esc(genre)}</button>`;
       }).join("");
-      return `<h1 class="hello">Buscar</h1><p class="lead">Explora el catálogo original por género o escribe un nombre.</p><div class="genre-grid">${genres}</div>`;
+      return `<h1 class="hello">Buscar</h1><p class="lead">Escribe un nombre o elige un género.</p><div class="genre-grid">${genres}</div>`;
     }
     const empty = !data.tracks.length && !data.albums.length && !data.artists.length && !data.playlists.length;
     if (empty) return `<h1 class="hello">Sin resultados</h1><p class="lead">No hay coincidencias para «${esc(query)}».</p>`;
@@ -352,13 +355,13 @@ export function createUI(player) {
     const editorial = lists.filter((item) => item.editorial);
     return `
       <h1 class="hello">Biblioteca</h1>
-      <p class="lead">Sin cuentas: Me gusta y las listas que crees viven en este equipo.</p>
+      <p class="lead">Tus Me gusta y tus listas son solo tuyos: nadie más los ve.</p>
       <div class="library-grid">
         <a class="lib-card likes" href="#/likes"><strong>Me gusta</strong><span>${likes.length} ${likes.length === 1 ? "canción" : "canciones"}</span></a>
         <button type="button" class="lib-card create" data-action="create-playlist"><strong>Nueva lista</strong><span>Armar una selección</span></button>
       </div>
       ${mine.length ? section("Tus listas", mine.map((item) => card(`#/playlist/${item.id}`, item.cover_url, item.name, item.description || "Lista personal", "play-playlist", item.id)).join("")) : ""}
-      ${section("Editorial", editorial.map((item) => card(`#/playlist/${item.id}`, item.cover_url, item.name, item.description, "play-playlist", item.id)).join(""))}
+      ${editorial.length ? section("Editorial", editorial.map((item) => card(`#/playlist/${item.id}`, item.cover_url, item.name, item.description, "play-playlist", item.id)).join("")) : ""}
     `;
   }
 
@@ -427,7 +430,7 @@ export function createUI(player) {
 
   function uploadRow(track, index, admin) {
     remember([track]);
-    return `<div class="track up-row" data-id="${track.id}" data-song="${esc(track.song_key || "")}">
+    return `<div class="track up-row${admin ? "" : " no-delete"}" data-id="${track.id}" data-song="${esc(track.song_key || "")}">
       <button type="button" class="up-cover" data-action="play-track" data-id="${track.id}" data-context="uploads" data-context-id="uploads" data-index="${index}" aria-label="Reproducir ${esc(track.title)}">
         <img src="${esc(track.cover_url)}" alt="">
       </button>
@@ -437,7 +440,7 @@ export function createUI(player) {
       </div>
       <span class="time">${fmt(track.duration_ms)}</span>
       <button type="button" class="icon-btn heart ${track.liked ? "is-on" : ""}" data-action="like" data-like="${track.id}" aria-label="Me gusta">${track.liked ? "♥" : "♡"}</button>
-      <button type="button" class="icon-btn up-delete" data-action="delete-upload" data-id="${track.id}" aria-label="Eliminar ${esc(track.title)}" title="${admin ? "Eliminar" : "Eliminar (pide PIN)"}">${TRASH_ICON}</button>
+      ${admin ? `<button type="button" class="icon-btn up-delete" data-action="delete-upload" data-id="${track.id}" aria-label="Eliminar ${esc(track.title)}" title="Eliminar">${TRASH_ICON}</button>` : ""}
       <button type="button" class="icon-btn more" data-action="menu" data-id="${track.id}" data-playlist="" aria-label="Más opciones para ${esc(track.title)}" aria-haspopup="menu">···</button>
     </div>`;
   }
@@ -448,44 +451,29 @@ export function createUI(player) {
     }
     const total = data.tracks.reduce((sum, track) => sum + track.duration_ms, 0);
     return `<p class="fine">${data.tracks.length} ${data.tracks.length === 1 ? "canción" : "canciones"} · ${fmt(total)}</p>
-      <div class="tracklist">${data.tracks.map((track, index) => uploadRow(track, index, data.auth.authenticated)).join("")}</div>`;
+      <div class="tracklist">${data.tracks.map((track, index) => uploadRow(track, index, data.admin)).join("")}</div>`;
   }
 
   async function renderUploads() {
     const data = await api.uploads();
-    const auth = data.auth;
-    let panel;
-    if (!auth.configured) {
-      panel = `<div class="auth-card">
-        <strong>Protege tus subidas con un PIN</strong>
-        <p>Antes de subir o eliminar canciones, crea un PIN numérico (4 a 12 dígitos). Solo se guarda cifrado en este equipo.</p>
-        <button type="button" class="btn solid" data-action="pin-setup">Crear PIN</button>
-      </div>`;
-    } else if (!auth.authenticated) {
-      panel = `<div class="auth-card">
-        <strong>Subir y eliminar están protegidos</strong>
-        <p>Ingresa tu PIN para desbloquear en este navegador por 30 días.</p>
-        <button type="button" class="btn solid" data-action="pin-login">Ingresar PIN</button>
-      </div>`;
-    } else {
-      panel = `<div class="upload-panel">
+    const panel = data.admin
+      ? `<div class="upload-panel">
         <label class="upload-drop" for="upload-input">
           <input type="file" id="upload-input" multiple accept="${UPLOAD_ACCEPT}">
           <strong>Elegir archivos</strong>
           <span>MP3, M4A/AAC, FLAC, OGG u WAV · hasta ${esc(data.max_mb)} MB cada uno · puedes elegir varios</span>
         </label>
         <div id="upload-queue" class="upload-queue"></div>
-        <div class="sheet-actions">
-          <button type="button" class="btn ghost" data-action="pin-change">Cambiar PIN</button>
-          <button type="button" class="btn ghost" data-action="pin-logout">Bloquear</button>
-        </div>
+      </div>`
+      : `<div class="auth-card">
+        <strong>Solo el administrador sube canciones</strong>
+        <p>Las canciones subidas son para todos: puedes escucharlas, darles Me gusta y agregarlas a tus listas.</p>
       </div>`;
-    }
     return `
-      <h1 class="hello">Subir música</h1>
-      <p class="lead">Sube tus propios archivos desde el teléfono o este equipo. Se leen título, artista, álbum, número de pista, duración y portada.</p>
+      <h1 class="hello">${data.admin ? "Subir música" : "Canciones subidas"}</h1>
+      <p class="lead">${data.admin ? "Sube archivos desde el teléfono o este equipo. Se leen título, artista, álbum, número de pista, duración y portada." : "Música que el administrador agregó al catálogo compartido."}</p>
       ${panel}
-      <section class="block"><div class="block-head"><h2>Tus archivos</h2></div><div id="upload-list">${uploadListHtml(data)}</div></section>
+      <section class="block"><div class="block-head"><h2>${data.admin ? "Archivos subidos" : "Canciones"}</h2></div><div id="upload-list">${uploadListHtml(data)}</div></section>
     `;
   }
 
@@ -497,56 +485,6 @@ export function createUI(player) {
     markPlaying();
   }
 
-  function pinField(name, label, autocomplete) {
-    return `<label>${label}<input name="${name}" type="password" inputmode="numeric" pattern="[0-9]{4,12}" minlength="4" maxlength="12" autocomplete="${autocomplete}" required></label>`;
-  }
-
-  function pinForm(mode, after) {
-    const setup = mode === "setup";
-    const change = mode === "change";
-    openModal({
-      title: setup ? "Crea tu PIN" : change ? "Cambiar PIN" : "Ingresa tu PIN",
-      confirm: setup ? "Crear PIN" : change ? "Guardar" : "Entrar",
-      body: `
-        ${setup ? `<p class="lead">Protege subir y eliminar canciones. Usa entre 4 y 12 dígitos. No se puede recuperar: si lo olvidas hay que borrarlo en el equipo.</p>` : ""}
-        ${change ? pinField("current", "PIN actual", "current-password") : ""}
-        ${setup || change ? `${pinField("pin", change ? "PIN nuevo" : "PIN", "new-password")}${pinField("confirm", "Repite el PIN", "new-password")}` : pinField("pin", "PIN", "current-password")}
-      `,
-      onSubmit: async (form) => {
-        const values = new FormData(form);
-        const pin = String(values.get("pin") || "").trim();
-        if (!/^\d{4,12}$/.test(pin)) throw new Error("El PIN debe tener entre 4 y 12 dígitos.");
-        if ((setup || change) && pin !== String(values.get("confirm") || "").trim()) throw new Error("Los PIN no coinciden.");
-        if (setup) await api.authSetup(pin, String(values.get("confirm")).trim());
-        else if (change) await api.authChange(String(values.get("current") || "").trim(), pin, String(values.get("confirm")).trim());
-        else await api.authLogin(pin);
-        closeModal();
-        showToast(setup ? "PIN creado" : change ? "PIN actualizado" : "Desbloqueado");
-        if (after) await after();
-        else if (parts()[0] === "uploads") route();
-      },
-    });
-  }
-
-  async function withAdmin(action) {
-    const auth = await api.auth();
-    if (auth.authenticated) return action();
-    pinForm(auth.configured ? "login" : "setup", action);
-    return null;
-  }
-
-  async function adminCall(action) {
-    try {
-      return await action();
-    } catch (error) {
-      if (error.status === 401) {
-        pinForm(error.data?.needs === "setup" ? "setup" : "login", () => adminCall(action));
-        return null;
-      }
-      throw error;
-    }
-  }
-
   function confirmDelete(track) {
     openModal({
       title: "Eliminar canción",
@@ -555,17 +493,15 @@ export function createUI(player) {
       body: `<p>Se eliminará «${esc(track.title)}» de ${esc(track.artist)}, con su archivo. También sale de tus listas y de Me gusta.</p>`,
       onSubmit: async () => {
         closeModal();
-        await adminCall(async () => {
-          await api.deleteTrack(track.id);
-          known.delete(track.id);
-          const snap = player.snapshot();
-          for (let i = snap.queue.length - 1; i >= 0; i -= 1) {
-            if (snap.queue[i].id === track.id && i !== snap.index) player.removeQueued(i);
-          }
-          showToast("Canción eliminada");
-          if (parts()[0] === "uploads") await refreshUploadList();
-          else route();
-        });
+        await api.deleteTrack(track.id);
+        known.delete(track.id);
+        const snap = player.snapshot();
+        for (let i = snap.queue.length - 1; i >= 0; i -= 1) {
+          if (snap.queue[i].id === track.id && i !== snap.index) player.removeQueued(i);
+        }
+        showToast("Canción eliminada");
+        if (parts()[0] === "uploads") await refreshUploadList();
+        else route();
       },
     });
   }
@@ -615,10 +551,9 @@ export function createUI(player) {
           row.done("ok", `Lista: ${track.title} · ${track.artist}`);
         } catch (error) {
           if (error.status === 409) row.done("dup", error.message);
-          else if (error.status === 401) {
-            row.done("error", "Se pidió el PIN de nuevo");
+          else if (error.status === 401 || error.status === 403) {
+            row.done("error", error.message);
             items.slice(i + 1).forEach((rest) => rest.row.done("error", "Pendiente: vuelve a elegir el archivo"));
-            pinForm(error.data?.needs === "setup" ? "setup" : "login");
             break;
           } else row.done("error", error.message);
         }
@@ -671,6 +606,275 @@ export function createUI(player) {
     `;
   }
 
+  // ---------- Cuenta y administración ----------
+
+  function isAdmin() {
+    return Boolean(me && me.admin);
+  }
+
+  function initial(text) {
+    return (String(text || "?").trim()[0] || "?").toUpperCase();
+  }
+
+  function paintPending(count) {
+    const n = Number(count) || 0;
+    if (me) me.pending = n;
+    const label = n ? String(n > 99 ? "99+" : n) : "";
+    for (const id of ["nav-badge", "user-admin-count"]) {
+      const el = document.getElementById(id);
+      if (!el) continue;
+      el.textContent = label;
+      el.hidden = !n;
+    }
+    const dot = document.getElementById("user-dot");
+    if (dot) dot.hidden = !n || !isAdmin();
+    const navAdmin = document.querySelector(".nav-link[data-nav='admin']");
+    if (navAdmin) navAdmin.setAttribute("aria-label", n ? `Cuentas, ${n} ${n === 1 ? "solicitud pendiente" : "solicitudes pendientes"}` : "Cuentas");
+    userBtn?.setAttribute("aria-label", `Tu cuenta: ${me?.user?.display_name || ""}${n && isAdmin() ? `. ${n} ${n === 1 ? "solicitud pendiente" : "solicitudes pendientes"}` : ""}`);
+  }
+
+  function paintMe() {
+    const user = me?.user;
+    if (!user) return;
+    document.getElementById("user-initial").textContent = initial(user.display_name || user.username);
+    document.getElementById("user-name").textContent = user.display_name || user.username;
+    document.getElementById("user-menu-head").innerHTML = `<strong>${esc(user.display_name || user.username)}</strong><span>@${esc(user.username)}${isAdmin() ? " · Administrador" : ""}</span>`;
+    document.querySelectorAll("[data-admin-only]").forEach((el) => {
+      el.hidden = !isAdmin();
+    });
+    document.body.classList.toggle("is-admin", isAdmin());
+    paintPending(me.pending || 0);
+  }
+
+  async function loadMe() {
+    me = await api.me();
+    setCsrf(me.csrf);
+    // Otro usuario en este navegador: borrar cachés del anterior.
+    try {
+      const last = localStorage.getItem("spotyofo-uid");
+      if (last && last !== String(me.user.id)) await clearSiteCaches();
+      localStorage.setItem("spotyofo-uid", String(me.user.id));
+    } catch {
+      /* almacenamiento bloqueado */
+    }
+    paintMe();
+    clearInterval(pendingTimer);
+    if (isAdmin()) {
+      pendingTimer = setInterval(() => {
+        if (document.hidden) return;
+        api.me().then((data) => {
+          setCsrf(data.csrf);
+          paintPending(data.pending || 0);
+        }).catch(() => {});
+      }, 60000);
+    }
+  }
+
+  async function clearSiteCaches() {
+    try {
+      navigator.serviceWorker?.controller?.postMessage("logout");
+      if (window.caches) {
+        const keys = await caches.keys();
+        await Promise.all(keys.map((key) => caches.delete(key)));
+      }
+    } catch {
+      /* sin caché disponible */
+    }
+  }
+
+  async function logout() {
+    closeUserMenu();
+    try {
+      await api.logout();
+    } catch {
+      // Token vencido (p. ej. otra pestaña cambió la contraseña): renovar y reintentar una vez.
+      await api.me().then((data) => setCsrf(data.csrf)).then(() => api.logout()).catch(() => {});
+    }
+    await clearSiteCaches();
+    try {
+      localStorage.removeItem("spotyofo-uid");
+    } catch {
+      /* almacenamiento bloqueado */
+    }
+    location.replace("/login?out=1");
+  }
+
+  function userMenuItems() {
+    return [...userMenu.querySelectorAll("[role='menuitem']")].filter((el) => !el.hidden);
+  }
+
+  function openUserMenu() {
+    closeMenu();
+    userMenu.hidden = false;
+    userBtn.setAttribute("aria-expanded", "true");
+    userMenuItems()[0]?.focus();
+  }
+
+  function closeUserMenu(restore = false) {
+    if (userMenu.hidden) return;
+    userMenu.hidden = true;
+    userBtn.setAttribute("aria-expanded", "false");
+    if (restore) userBtn.focus();
+  }
+
+  function onUserMenuKey(event) {
+    const items = userMenuItems();
+    const index = items.indexOf(document.activeElement);
+    if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation();
+      closeUserMenu(true);
+    } else if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      const next = (index + (event.key === "ArrowDown" ? 1 : -1) + items.length) % items.length;
+      items[next]?.focus();
+    } else if (event.key === "Home" || event.key === "End") {
+      event.preventDefault();
+      items[event.key === "Home" ? 0 : items.length - 1]?.focus();
+    } else if (event.key === "Tab") {
+      closeUserMenu();
+    }
+  }
+
+  const STATUS_ORDER = [
+    ["pending", "Solicitudes pendientes", "No hay solicitudes pendientes."],
+    ["active", "Cuentas activas", ""],
+    ["blocked", "Bloqueadas", ""],
+    ["rejected", "Rechazadas", ""],
+  ];
+
+  function userActions(user, selfId) {
+    const self = user.id === selfId;
+    const btn = (act, label, kind = "ghost") => `<button type="button" class="btn small ${kind}" data-action="admin-act" data-act="${act}" data-user="${user.id}" data-name="${esc(user.display_name)}">${label}</button>`;
+    const list = [];
+    if (user.status === "pending") list.push(btn("approve", "Aprobar", "solid"), btn("reject", "Rechazar", "ghost danger-text"));
+    if (user.status === "rejected") list.push(btn("approve", "Aprobar", "solid"));
+    if (user.status === "blocked") list.push(btn("unblock", "Desbloquear", "solid"));
+    if (!self && (user.status === "active" || user.status === "blocked")) list.push(btn("reset-password", "Restablecer contraseña"));
+    if (!self && user.status === "active") list.push(btn("block", "Bloquear", "ghost danger-text"));
+    if (!self) list.push(btn("delete", "Eliminar", "ghost danger-text"));
+    if (self) list.push(`<a class="btn small ghost" href="/account/password">Cambiar mi contraseña</a>`);
+    return list.join("");
+  }
+
+  function userRow(user, selfId) {
+    const meta = [
+      `@${esc(user.username)}`,
+      user.role === "admin" ? "Administrador" : "",
+      user.id === selfId ? "Tú" : "",
+      `Pidió acceso ${esc(user.created_at || "")}`,
+      user.last_login_at ? `Último ingreso ${esc(user.last_login_at)}` : "Sin ingresos",
+      user.status === "active" ? `${user.playlists} ${user.playlists === 1 ? "lista" : "listas"} · ${user.likes} Me gusta` : "",
+      user.locked ? "Bloqueo temporal por intentos fallidos" : "",
+      user.must_change_password ? "Debe cambiar su contraseña" : "",
+    ].filter(Boolean).join(" · ");
+    return `<li class="user-row" data-user="${user.id}">
+      <span class="user-avatar" aria-hidden="true">${esc(initial(user.display_name))}</span>
+      <div class="user-main">
+        <strong>${esc(user.display_name)}</strong>
+        <span>${meta}</span>
+      </div>
+      <span class="user-status is-${esc(user.status)}">${esc(user.status_label)}</span>
+      <div class="user-actions">${userActions(user, selfId)}</div>
+    </li>`;
+  }
+
+  async function renderAdmin() {
+    const data = await api.adminUsers();
+    paintPending(data.pending);
+    const groups = STATUS_ORDER.map(([status, title, empty]) => {
+      const users = data.users.filter((user) => user.status === status);
+      if (!users.length && !empty) return "";
+      const badge = status === "pending" && users.length ? ` <span class="count-badge" aria-hidden="true">${users.length}</span>` : "";
+      return `<section class="block" aria-labelledby="users-${status}">
+        <div class="block-head"><h2 id="users-${status}">${title}${badge}</h2></div>
+        ${users.length ? `<ul class="user-list">${users.map((user) => userRow(user, data.me)).join("")}</ul>` : `<p class="empty">${empty}</p>`}
+      </section>`;
+    }).join("");
+    return `
+      <h1 class="hello">Cuentas</h1>
+      <p class="lead">Tú decides quién entra. Cada cuenta tiene sus propios Me gusta, listas e historial; el catálogo de música es compartido.</p>
+      ${groups}
+    `;
+  }
+
+  function showTempPassword(user, password) {
+    openModal({
+      title: "Contraseña temporal",
+      confirm: "Listo",
+      noCancel: true,
+      body: `<p>Entrégale esta contraseña a <strong>${esc(user.display_name)}</strong> (@${esc(user.username)}). Al entrar deberá elegir una nueva. No se volverá a mostrar.</p>
+        <p class="temp-pass"><code id="temp-pass">${esc(password)}</code></p>
+        <button type="button" class="btn ghost small" id="temp-copy">Copiar</button>`,
+      onSubmit: async () => closeModal(),
+    });
+    document.getElementById("temp-copy")?.addEventListener("click", async () => {
+      try {
+        await navigator.clipboard.writeText(password);
+        showToast("Contraseña copiada");
+      } catch {
+        const range = document.createRange();
+        range.selectNodeContents(document.getElementById("temp-pass"));
+        const selection = getSelection();
+        selection.removeAllRanges();
+        selection.addRange(range);
+        showToast("Selecciónala y cópiala");
+      }
+    });
+  }
+
+  const ADMIN_CONFIRM = {
+    reject: ["Rechazar solicitud", "Rechazar", (name) => `«${name}» no podrá entrar. Puedes aprobarla más adelante.`],
+    block: ["Bloquear cuenta", "Bloquear", (name) => `«${name}» saldrá de todas sus sesiones y no podrá entrar hasta que la desbloquees.`],
+    delete: ["Eliminar cuenta", "Eliminar", (name) => `Se borrarán la cuenta de «${name}», sus listas, sus Me gusta y su historial. No se puede deshacer.`],
+    "reset-password": ["Restablecer contraseña", "Restablecer", (name) => `Se creará una contraseña temporal para «${name}» y se cerrarán sus sesiones.`],
+  };
+
+  async function adminAct(button) {
+    const act = button.dataset.act;
+    const id = button.dataset.user;
+    const name = button.dataset.name || "";
+    const run = async () => {
+      button.disabled = true;
+      try {
+        if (act === "delete") {
+          const result = await api.adminDelete(id);
+          paintPending(result.pending);
+          showToast(`Cuenta de «${name}» eliminada`);
+        } else {
+          const result = await api.adminAction(id, act);
+          paintPending(result.pending);
+          if (act === "reset-password" && result.temporary_password) showTempPassword(result.user, result.temporary_password);
+          const done = { approve: "aprobada", reject: "rechazada", block: "bloqueada", unblock: "desbloqueada", "reset-password": "con contraseña temporal" };
+          showToast(`Cuenta de «${name}» ${done[act] || "actualizada"}`);
+        }
+        if (parts()[0] === "admin") {
+          const scroll = view.scrollTop;
+          view.innerHTML = await renderAdmin();
+          view.scrollTop = scroll;
+          const again = view.querySelector(`.user-row[data-user="${CSS.escape(id)}"] .user-actions button`);
+          (again || view.querySelector(".user-row button") || view).focus?.();
+        }
+      } finally {
+        button.disabled = false;
+      }
+    };
+    const confirm = ADMIN_CONFIRM[act];
+    if (!confirm) return run();
+    const [title, label, text] = confirm;
+    openModal({
+      title,
+      confirm: label,
+      danger: act !== "reset-password",
+      body: `<p>${esc(text(name))}</p>`,
+      onSubmit: async () => {
+        closeModal();
+        await run().catch((error) => showToast(error.message));
+      },
+    });
+    return null;
+  }
+
   async function route() {
     if (orderTimer) flushOrder();
     closePicker();
@@ -689,6 +893,8 @@ export function createUI(player) {
     }
     if (name === "library") return show(renderLibrary);
     if (name === "uploads") return show(renderUploads);
+    if (name === "admin") return isAdmin() ? show(renderAdmin) : show(renderHome);
+    if (name === "equipo" && !isAdmin()) return show(async () => `<h1 class="hello">Archivo de Equipo</h1><p class="empty">La carpeta de música del servidor es solo para el administrador.</p>`);
     if (name === "equipo") {
       const rel = parts().slice(1).map(decodeURIComponent).join("/");
       return show(() => renderEquipo(rel));
@@ -1460,7 +1666,7 @@ export function createUI(player) {
       <a role="menuitem" href="${equipoHash(track.folder || "")}">Abrir carpeta</a>`
       : `${item("add-to-playlist", `${ADD_ICON}Agregar a playlist`)}
       ${remove}
-      ${track.source === "user" ? item("delete-upload", "Eliminar archivo") : ""}
+      ${track.source === "user" && isAdmin() ? item("delete-upload", "Eliminar archivo") : ""}
       <a role="menuitem" href="#/album/${track.album_id}">Ir al álbum</a>
       <a role="menuitem" href="#/artist/${track.artist_id}">Ir al artista</a>`;
     menu.innerHTML = `
@@ -1915,19 +2121,13 @@ export function createUI(player) {
       playlistForm(null);
       return;
     }
-    if (action === "pin-setup" || action === "pin-login" || action === "pin-change") {
-      pinForm(action.slice(4));
-      return;
-    }
-    if (action === "pin-logout") {
-      await api.authLogout();
-      showToast("Subidas bloqueadas");
-      route();
-      return;
-    }
     if (action === "delete-upload") {
       const track = trackFromRow(target);
-      if (track) await withAdmin(() => confirmDelete(track));
+      if (track && isAdmin()) confirmDelete(track);
+      return;
+    }
+    if (action === "admin-act") {
+      await adminAct(target);
       return;
     }
     if (action === "play-equipo") {
@@ -2117,9 +2317,7 @@ export function createUI(player) {
           },
         }]);
       }
-      if (action === "delete-upload") {
-        await withAdmin(() => confirmDelete(track)).catch((error) => showToast(error.message));
-      }
+      if (action === "delete-upload" && isAdmin()) confirmDelete(track);
     });
     view.addEventListener("change", (event) => {
       if (event.target.id !== "upload-input") return;
@@ -2320,7 +2518,10 @@ export function createUI(player) {
       paintRange(volume);
     });
     document.getElementById("p-mute").addEventListener("click", () => player.toggleMute());
-    window.addEventListener("hashchange", () => route());
+    window.addEventListener("hashchange", () => {
+      closeUserMenu();
+      route();
+    });
     window.addEventListener("keydown", onKey);
     document.getElementById("keys-help").addEventListener("click", showShortcuts);
     document.getElementById("side-toggle").addEventListener("click", toggleSide);
@@ -2364,8 +2565,28 @@ export function createUI(player) {
     paintRange(volume);
     paintRange(seek);
     syncPlayer(snap);
-    if (!location.hash) location.hash = "#/";
-    else route();
+    onSessionExpired((needs) => location.assign(needs === "setup" ? "/setup" : "/login"));
+    userBtn.addEventListener("click", () => (userMenu.hidden ? openUserMenu() : closeUserMenu(true)));
+    userMenu.addEventListener("keydown", onUserMenuKey);
+    userMenu.addEventListener("click", (event) => {
+      if (event.target.closest("#user-logout")) {
+        logout();
+        return;
+      }
+      if (event.target.closest("a")) closeUserMenu();
+    });
+    document.addEventListener("click", (event) => {
+      if (!userMenu.hidden && !userMenu.contains(event.target) && !userBtn.contains(event.target)) closeUserMenu();
+    });
+    loadMe()
+      .then(() => {
+        if (!location.hash) location.hash = "#/";
+        else route();
+      })
+      .catch((error) => {
+        if (error.status === 401) location.assign(error.data?.needs === "setup" ? "/setup" : "/login");
+        else view.innerHTML = `<p class="empty">${esc(error.message)}</p>`;
+      });
   }
 
   return { boot };

@@ -1,4 +1,4 @@
-import { api } from "./api.js?v=20260927e";
+import { api } from "./api.js?v=20260927s";
 
 export const EQ_FREQS = [31, 62, 125, 250, 500, 1000, 2000, 4000, 8000, 16000];
 export const EQ_LABELS = ["31", "62", "125", "250", "500", "1k", "2k", "4k", "8k", "16k"];
