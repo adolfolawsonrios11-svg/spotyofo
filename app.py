@@ -1,7 +1,6 @@
 """SpotyOFO: reproductor con cuentas propias aprobadas por el administrador."""
 
 import hmac
-import html
 import logging
 import os
 import secrets
@@ -17,6 +16,7 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 
 import accounts
 import adminpin
+import demo
 import devicelibrary
 import genres
 import localfiles
@@ -69,14 +69,8 @@ MONTHS = [
     "enero", "febrero", "marzo", "abril", "mayo", "junio",
     "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre",
 ]
-PALETTE = [
-    ("#12343c", "#7dffe0"),
-    ("#241018", "#ff6d93"),
-    ("#1a1430", "#b7a6ff"),
-    ("#3a2410", "#ffc56d"),
-    ("#241612", "#ff7358"),
-    ("#10243a", "#8fd4ff"),
-]
+PALETTE = playlistedit.PALETTE
+write_playlist_cover = playlistedit.write_playlist_cover
 
 
 # ---------- seguridad: rutas públicas, cabeceras y CSRF ----------
@@ -84,7 +78,7 @@ PALETTE = [
 # Todo lo demás exige sesión (páginas, API, audio y portadas).
 PUBLIC_EXACT = {"/api/health", "/manifest.webmanifest", "/sw.js", "/favicon.ico", "/robots.txt"}
 PUBLIC_PREFIX = ("/static/css/", "/static/js/", "/static/icons/", "/static/favicon.svg")
-AUTH_PAGES = {"/login", "/register", "/setup", "/logout"}
+AUTH_PAGES = {"/login", "/login/demo", "/register", "/setup", "/logout"}
 SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
 CSP = "; ".join([
     "default-src 'self'",
@@ -209,8 +203,18 @@ def uid():
     return g.user["id"]
 
 
+def is_demo():
+    return bool(g.get("user")) and bool(g.user.get("is_demo"))
+
+
 def is_admin():
-    return bool(g.get("user")) and g.user["role"] == "admin"
+    # La cuenta demo nunca tiene permisos de administrador, aunque alguien le cambie el rol.
+    return bool(g.get("user")) and g.user["role"] == "admin" and not is_demo()
+
+
+DEMO_FORBIDDEN = "La cuenta demo no puede hacer esto."
+DEMO_LOGIN_PER_IP = 30
+DEMO_LOGIN_WINDOW = 15 * 60
 
 
 @app.before_request
@@ -334,6 +338,7 @@ def render_auth(mode, status=200, **context):
             asset_v=ASSET_VERSION,
             min_password=accounts.MIN_PASSWORD,
             registration_open=REGISTRATION_OPEN,
+            demo_enabled=demo.DEMO_ENABLED,
             **context,
         ),
         status,
@@ -368,6 +373,25 @@ def login_page():
     login_user(user)
     log.info("Ingreso correcto de %s desde %s", user["username"], client_ip())
     return no_store_redirect("/account/password" if user["must_change_password"] else target)
+
+
+@app.post("/login/demo")
+def demo_login_page():
+    """Botón «Probar demo»: entra a la cuenta demo sin escribir la contraseña. Solo con SPOTY_DEMO_ENABLED=1."""
+    if not demo.DEMO_ENABLED:
+        return no_store_redirect("/login")
+    if not form_csrf_ok():
+        return render_auth("login", 400, next="/", error="El formulario expiró. Intenta de nuevo.")
+    ip = client_ip()
+    if accounts.limiter.count(("demo-login", ip), DEMO_LOGIN_WINDOW) >= DEMO_LOGIN_PER_IP:
+        return render_auth("login", 429, next="/", error="Demasiados ingresos a la demo desde esta red. Espera unos minutos.")
+    accounts.limiter.hit(("demo-login", ip), DEMO_LOGIN_WINDOW)
+    user = demo.find_demo(get_db())
+    if not user or user["status"] != "active" or user["must_change_password"]:
+        return render_auth("login", 503, next="/", error="La cuenta demo no está disponible ahora. Intenta más tarde.")
+    login_user(user)
+    log.info("Ingreso a la demo desde %s", ip)
+    return no_store_redirect("/")
 
 
 @app.route("/register", methods=["GET", "POST"])
@@ -445,6 +469,10 @@ def setup_page():
 @app.route("/account/password", methods=["GET", "POST"])
 def password_page():
     forced = bool(g.user["must_change_password"])
+    if is_demo():
+        # Visible (para explicar por qué), pero sin formulario; el POST se rechaza igual.
+        return render_auth("password", 403 if request.method == "POST" else 200, forced=False, demo=True,
+                           error=DEMO_FORBIDDEN if request.method == "POST" else "")
     if request.method == "GET":
         return render_auth("password", forced=forced)
     if not form_csrf_ok():
@@ -490,6 +518,7 @@ def me():
         "user": accounts.public_user(g.user),
         "csrf": csrf_token(),
         "admin": is_admin(),
+        "demo": is_demo(),
     }
     if is_admin():
         data["pending"] = accounts.pending_count(get_db())
@@ -580,26 +609,6 @@ def greeting():
         hello = "Buenas noches"
     label = f"{DAYS[now.weekday()]} {now.day} de {MONTHS[now.month - 1]}"
     return hello, label
-
-
-def write_playlist_cover(filename, c1, c2, label):
-    initial = html.escape((label[:1] or "S").upper())
-    svg = f"""<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 640" role="img">
-  <defs>
-    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0%" stop-color="{c1}"/>
-      <stop offset="100%" stop-color="{c2}"/>
-    </linearGradient>
-  </defs>
-  <rect width="640" height="640" fill="url(#bg)"/>
-  <circle cx="460" cy="180" r="90" fill="#ffffff" fill-opacity="0.18"/>
-  <circle cx="180" cy="460" r="120" fill="#000000" fill-opacity="0.18"/>
-  <text x="72" y="430" fill="#ffffff" font-family="Segoe UI, sans-serif" font-size="280" font-weight="700">{initial}</text>
-</svg>
-"""
-    path = Path(__file__).resolve().parent / "static" / "covers" / filename
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(svg, encoding="utf-8")
 
 
 def like_pattern(value):
@@ -797,6 +806,11 @@ def create_playlist():
         return fail("La descripción admite hasta 280 caracteres.")
     written = []
     owner = uid()
+    if is_demo():
+        with get_db().cursor() as cur:
+            cur.execute("SELECT COUNT(*) AS n FROM playlists WHERE editorial = 0 AND owner_id = %s", (owner,))
+            if cur.fetchone()["n"] >= demo.DEMO_MAX_PLAYLISTS:
+                return fail(f"La cuenta demo admite hasta {demo.DEMO_MAX_PLAYLISTS} listas. Se reinicia cada noche.", 403)
 
     def create_row(cur):
         cur.execute("SELECT COUNT(*) AS total FROM playlists WHERE editorial = 0 AND owner_id = %s", (owner,))
@@ -1010,7 +1024,9 @@ def register_play():
         cur.execute("SELECT id FROM tracks WHERE id = %s", (track_id,))
         if not cur.fetchone():
             return fail("Pista no encontrada.", 404)
-        cur.execute("UPDATE tracks SET plays = plays + 1 WHERE id = %s", (track_id,))
+        if not is_demo():
+            # Las visitas a la demo no cambian el contador global (lo más escuchado del dueño).
+            cur.execute("UPDATE tracks SET plays = plays + 1 WHERE id = %s", (track_id,))
         cur.execute("INSERT INTO play_history (track_id, user_id) VALUES (%s, %s)", (track_id, uid()))
     return jsonify(ok=True)
 

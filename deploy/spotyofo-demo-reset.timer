@@ -1,0 +1,11 @@
+# Todas las noches a las 04:00 hora de Chile (America/Santiago, con horario de verano).
+[Unit]
+Description=SpotyOFO: reiniciar la cuenta demo cada noche
+
+[Timer]
+OnCalendar=*-*-* 04:00:00 America/Santiago
+Persistent=true
+RandomizedDelaySec=120
+
+[Install]
+WantedBy=timers.target

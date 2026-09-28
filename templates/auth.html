@@ -47,6 +47,15 @@
           <input id="password" name="password" type="password" autocomplete="current-password" maxlength="128" required {% if username %}autofocus{% endif %}>
           <button type="submit" class="btn solid">Entrar</button>
         </form>
+        {% if demo_enabled %}
+        <div class="auth-demo">
+          <p><strong>¿Vienes a mirar?</strong> Entra a la cuenta demo: escucha, busca, da Me gusta y arma listas. Se reinicia cada noche.</p>
+          <form method="post" action="/login/demo">
+            <input type="hidden" name="csrf_token" value="{{ csrf }}">
+            <button type="submit" class="btn ghost wide">Probar demo</button>
+          </form>
+        </div>
+        {% endif %}
         {% if registration_open %}<p class="auth-alt">¿No tienes cuenta? <a href="/register">Pide acceso</a></p>{% endif %}
         <p class="auth-fine">¿Olvidaste tu contraseña? Pídele al administrador que la restablezca.</p>
 
@@ -97,6 +106,22 @@
           <input id="confirm" name="confirm" type="password" autocomplete="new-password" minlength="{{ min_password }}" maxlength="128" required>
           <button type="submit" class="btn solid">Crear administrador</button>
         </form>
+
+      {% elif mode == "password" and demo %}
+        <p class="auth-msg is-demo" role="status"><span class="demo-chip">Cuenta demo</span> Estás usando la cuenta demo. La contraseña es fija y no se puede cambiar; los cambios se reinician cada noche.</p>
+        <div class="auth-form" aria-disabled="true">
+          <fieldset disabled>
+            <label for="current">Contraseña actual</label>
+            <input id="current" type="password" autocomplete="off" placeholder="No disponible en la demo">
+            <label for="password">Contraseña nueva</label>
+            <input id="password" type="password" autocomplete="off" placeholder="No disponible en la demo">
+            <button type="button" class="btn solid" disabled>Guardar contraseña</button>
+          </fieldset>
+        </div>
+        <div class="auth-row">
+          <a class="btn ghost" href="/">Volver</a>
+          <form method="post" action="/logout"><input type="hidden" name="csrf_token" value="{{ csrf }}"><button type="submit" class="btn ghost">Cerrar sesión</button></form>
+        </div>
 
       {% elif mode == "password" %}
         <p class="auth-lead">{% if forced %}El administrador te dio una contraseña temporal. Elige una nueva para seguir.{% else %}Elige una contraseña nueva. Se cerrarán tus sesiones en otros equipos.{% endif %}</p>

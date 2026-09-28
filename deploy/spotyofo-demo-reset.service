@@ -1,0 +1,20 @@
+# Reinicio nocturno de la cuenta demo de SpotyOFO (lo dispara spotyofo-demo-reset.timer).
+# Solo toca datos de la cuenta demo (SPOTY_DEMO_USER, marcada con is_demo = 1).
+# Instalar en ofoserv:
+#   sudo cp deploy/spotyofo-demo-reset.service deploy/spotyofo-demo-reset.timer /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now spotyofo-demo-reset.timer
+# Probar a mano:  sudo systemctl start spotyofo-demo-reset.service && journalctl -u spotyofo-demo-reset -n 20
+[Unit]
+Description=SpotyOFO: reiniciar la cuenta demo
+After=network.target mariadb.service
+Wants=mariadb.service
+
+[Service]
+Type=oneshot
+User=ofo
+Group=ofo
+WorkingDirectory=/var/www/spotyofo
+EnvironmentFile=/etc/spotyofo.env
+ExecStart=/var/www/spotyofo/.venv/bin/python manage.py demo-reset
+NoNewPrivileges=yes
+PrivateTmp=yes

@@ -120,6 +120,14 @@ h1 {
 .auth-row { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 16px; }
 .auth-row form { margin: 0; }
 .auth-code { color: var(--faint); }
+.auth-demo { margin-top: 20px; padding-top: 18px; border-top: 1px solid var(--line); }
+.auth-demo p { color: var(--muted); margin: 0 0 12px; font-size: 15px; }
+.auth-demo strong { color: var(--text); }
+.auth-msg.is-demo { background: rgba(141, 123, 255, 0.14); border: 1px solid rgba(141, 123, 255, 0.45); color: #e4defe; }
+.demo-chip { display: inline-block; margin-right: 6px; padding: 1px 9px; border-radius: 999px; background: var(--violet); color: #120d2e; font-size: 12px; font-weight: 700; letter-spacing: 0.02em; vertical-align: 1px; }
+.auth-form fieldset { border: 0; margin: 0; padding: 0; display: grid; gap: 6px; min-width: 0; }
+.auth-form fieldset[disabled] { opacity: 0.55; }
+.auth-form fieldset[disabled] .btn { cursor: not-allowed; }
 @media (max-width: 420px) {
   .auth { place-items: start center; }
   .auth-card { padding: 22px 18px 20px; border-radius: 18px; }

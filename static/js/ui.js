@@ -1,5 +1,5 @@
-import { api, onSessionExpired, setCsrf } from "./api.js?v=20260927g";
-import { EQ_FREQS, EQ_LABELS, EQ_PRESETS } from "./player.js?v=20260927g";
+import { api, onSessionExpired, setCsrf } from "./api.js?v=20260928a";
+import { EQ_FREQS, EQ_LABELS, EQ_PRESETS } from "./player.js?v=20260928a";
 
 const known = new Map();
 const UPLOAD_EXT = [".mp3", ".m4a", ".mp4", ".aac", ".flac", ".ogg", ".oga", ".opus", ".wav"];
@@ -437,7 +437,7 @@ export function createUI(player) {
     const editorial = lists.filter((item) => item.editorial);
     return `
       <h1 class="hello">Biblioteca</h1>
-      <p class="lead">Tus Me gusta y tus listas son solo tuyos: nadie más los ve.</p>
+      <p class="lead">${isDemo() ? "Esta es una cuenta demo compartida: lo que hagas aquí lo ven otros visitantes y se reinicia cada noche." : "Tus Me gusta y tus listas son solo tuyos: nadie más los ve."}</p>
       <div class="library-grid">
         <a class="lib-card likes" href="#/likes"><strong>Me gusta</strong><span>${likes.length} ${likes.length === 1 ? "canción" : "canciones"}</span></a>
         ${genreCount ? `<a class="lib-card genres" href="#/genres"><strong>Géneros</strong><span>${plural(genreCount, "género", "géneros")}</span></a>` : ""}
@@ -814,6 +814,10 @@ export function createUI(player) {
     return Boolean(me && me.admin);
   }
 
+  function isDemo() {
+    return Boolean(me && me.demo);
+  }
+
   function initial(text) {
     return (String(text || "?").trim()[0] || "?").toUpperCase();
   }
@@ -840,11 +844,19 @@ export function createUI(player) {
     if (!user) return;
     document.getElementById("user-initial").textContent = initial(user.display_name || user.username);
     document.getElementById("user-name").textContent = user.display_name || user.username;
-    document.getElementById("user-menu-head").innerHTML = `<strong>${esc(user.display_name || user.username)}</strong><span>@${esc(user.username)}${isAdmin() ? " · Administrador" : ""}</span>`;
+    document.getElementById("user-menu-head").innerHTML = `<strong>${esc(user.display_name || user.username)}</strong><span>@${esc(user.username)}${isAdmin() ? " · Administrador" : ""}${isDemo() ? " · Cuenta demo" : ""}</span>`;
     document.querySelectorAll("[data-admin-only]").forEach((el) => {
       el.hidden = !isAdmin();
     });
     document.body.classList.toggle("is-admin", isAdmin());
+    // Cuenta demo: aviso visible y sin «Cambiar contraseña» (el servidor también lo rechaza).
+    document.body.classList.toggle("is-demo", isDemo());
+    const demoBanner = document.getElementById("demo-banner");
+    if (demoBanner) demoBanner.hidden = !isDemo();
+    const passwordItem = document.getElementById("user-password");
+    if (passwordItem) passwordItem.hidden = isDemo();
+    const demoNote = document.getElementById("user-demo-note");
+    if (demoNote) demoNote.hidden = !isDemo();
     paintPending(me.pending || 0);
   }
 
@@ -952,7 +964,7 @@ export function createUI(player) {
     if (user.status === "pending") list.push(btn("approve", "Aprobar", "solid"), btn("reject", "Rechazar", "ghost danger-text"));
     if (user.status === "rejected") list.push(btn("approve", "Aprobar", "solid"));
     if (user.status === "blocked") list.push(btn("unblock", "Desbloquear", "solid"));
-    if (!self && (user.status === "active" || user.status === "blocked")) list.push(btn("reset-password", "Restablecer contraseña"));
+    if (!self && !user.demo && (user.status === "active" || user.status === "blocked")) list.push(btn("reset-password", "Restablecer contraseña"));
     if (!self && user.status === "active") list.push(btn("block", "Bloquear", "ghost danger-text"));
     if (!self) list.push(btn("delete", "Eliminar", "ghost danger-text"));
     if (self) list.push(`<a class="btn small ghost" href="/account/password">Cambiar mi contraseña</a>`);
@@ -963,6 +975,7 @@ export function createUI(player) {
     const meta = [
       `@${esc(user.username)}`,
       user.role === "admin" ? "Administrador" : "",
+      user.demo ? "Cuenta demo (se reinicia cada noche)" : "",
       user.id === selfId ? "Tú" : "",
       `Pidió acceso ${esc(user.created_at || "")}`,
       user.last_login_at ? `Último ingreso ${esc(user.last_login_at)}` : "Sin ingresos",

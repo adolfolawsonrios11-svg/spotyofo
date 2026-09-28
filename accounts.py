@@ -4,6 +4,8 @@
 - Registro propio -> cuenta «pending». Solo un administrador la aprueba.
 - Bloqueo por cuenta (5 intentos fallidos -> 15 min) y por IP (en memoria, 1 worker).
 - session_version: al cambiar la contraseña, bloquear o borrar, las sesiones viejas dejan de valer.
+- Cuenta demo (is_demo = 1): sin bloqueo por cuenta (solo por IP), para que nadie la deje
+  bloqueada a propósito. Sus restricciones están en app.py y su reinicio en demo.py.
 - claim_legacy(): pasa los datos anteriores a las cuentas (listas propias, Me gusta,
   historial) al primer administrador. Una sola vez (marcado en app_meta).
 """
@@ -37,7 +39,7 @@ STATUS_LABEL = {
 }
 USER_FIELDS = (
     "id, username, display_name, role, status, must_change_password, session_version, "
-    "failed_logins, locked_until, created_at, approved_at, approved_by, last_login_at"
+    "failed_logins, locked_until, created_at, approved_at, approved_by, last_login_at, is_demo"
 )
 
 
@@ -147,6 +149,7 @@ def public_user(row):
         "approved_at": _fmt(row.get("approved_at")),
         "last_login_at": _fmt(row.get("last_login_at")),
         "locked": bool(row.get("locked_until")) and _is_future(row.get("locked_until")),
+        "demo": bool(row.get("is_demo")),
     }
 
 
@@ -321,7 +324,8 @@ def authenticate(conn, username, password, ip):
         check_password_hash(_DUMMY_HASH, text)
         limiter.hit(("login-ip", ip), IP_WINDOW)
         raise AccountError("Usuario o contraseña incorrectos.", 401)
-    if row["is_locked"]:
+    demo = bool(row["is_demo"])
+    if row["is_locked"] and not demo:
         limiter.hit(("login-ip", ip), IP_WINDOW)
         raise AccountError(
             f"Cuenta bloqueada por intentos fallidos. Espera {ACCOUNT_LOCK_MINUTES} minutos o pide al administrador que restablezca tu contraseña.",
@@ -329,6 +333,9 @@ def authenticate(conn, username, password, ip):
         )
     if not check_password_hash(row["password_hash"], text):
         limiter.hit(("login-ip", ip), IP_WINDOW)
+        if demo:
+            # Cuenta demo compartida: solo cuenta el límite por IP; no se bloquea la cuenta.
+            raise AccountError("Usuario o contraseña incorrectos.", 401)
         with conn.cursor() as cur:
             cur.execute(
                 """
@@ -402,6 +409,8 @@ def admin_action(conn, actor, target_id, action):
         raise AccountError("Usuario no encontrado.", 404)
     if target["id"] == actor["id"] and action in ("reject", "block", "reset-password"):
         raise AccountError("No puedes hacer eso con tu propia cuenta. Usa «Cambiar contraseña».", 400)
+    if target.get("is_demo") and action == "reset-password":
+        raise AccountError("La contraseña de la cuenta demo se define en el servidor (SPOTY_DEMO_PASSWORD).", 409)
     extra = {}
     with conn.cursor() as cur:
         if action == "approve":

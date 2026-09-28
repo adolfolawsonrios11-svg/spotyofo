@@ -134,6 +134,7 @@ CREATE TABLE IF NOT EXISTS users (
   approved_at DATETIME NULL,
   approved_by INT NULL,
   last_login_at DATETIME NULL,
+  is_demo TINYINT(1) NOT NULL DEFAULT 0,
   UNIQUE KEY uq_users_username (username),
   KEY idx_users_status (status)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
@@ -202,6 +203,8 @@ MIGRATION_COLUMNS = [
     # Cuentas: dueño de cada lista propia e historial por usuario (NULL = datos anteriores a las cuentas).
     ("playlists", "owner_id", "ALTER TABLE playlists ADD COLUMN owner_id INT NULL DEFAULT NULL"),
     ("play_history", "user_id", "ALTER TABLE play_history ADD COLUMN user_id INT NULL DEFAULT NULL"),
+    # Cuenta demo del portafolio: restringida y reiniciada cada noche (ver demo.py).
+    ("users", "is_demo", "ALTER TABLE users ADD COLUMN is_demo TINYINT(1) NOT NULL DEFAULT 0"),
 ]
 MIGRATION_INDEXES = [
     ("tracks", "uq_tracks_hash", "ALTER TABLE tracks ADD UNIQUE KEY uq_tracks_hash (file_hash)"),

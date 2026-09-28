@@ -13,7 +13,9 @@ lista ajena responde 404 (no se revela que existe). Las editoriales son de todos
 lectura. Los archivos de la carpeta Música (claves «d:») son solo para administradores.
 """
 
+import html
 from contextlib import contextmanager
+from pathlib import Path
 
 import devicelibrary
 from localfiles import LocalFileError
@@ -21,6 +23,35 @@ from localfiles import LocalFileError
 MAX_ITEMS_PER_REQUEST = 1000
 MAX_PLAYLIST_TRACKS = 5000
 MAX_PATH = 512
+COVERS_DIR = Path(__file__).resolve().parent / "static" / "covers"
+PALETTE = [
+    ("#12343c", "#7dffe0"),
+    ("#241018", "#ff6d93"),
+    ("#1a1430", "#b7a6ff"),
+    ("#3a2410", "#ffc56d"),
+    ("#241612", "#ff7358"),
+    ("#10243a", "#8fd4ff"),
+]
+
+
+def write_playlist_cover(filename, c1, c2, label):
+    initial = html.escape((label[:1] or "S").upper())
+    svg = f"""<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 640" role="img">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="{c1}"/>
+      <stop offset="100%" stop-color="{c2}"/>
+    </linearGradient>
+  </defs>
+  <rect width="640" height="640" fill="url(#bg)"/>
+  <circle cx="460" cy="180" r="90" fill="#ffffff" fill-opacity="0.18"/>
+  <circle cx="180" cy="460" r="120" fill="#000000" fill-opacity="0.18"/>
+  <text x="72" y="430" fill="#ffffff" font-family="Segoe UI, sans-serif" font-size="280" font-weight="700">{initial}</text>
+</svg>
+"""
+    path = COVERS_DIR / filename
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(svg, encoding="utf-8")
 
 
 class PlaylistError(Exception):

@@ -11,6 +11,10 @@ Comandos:
                              quita el bloqueo por intentos y cierra sus sesiones abiertas.
   create-admin USUARIO       Crea un administrador (si es el primero, recibe los datos anteriores).
   make-admin USUARIO         Da rol de administrador a una cuenta existente y la activa.
+  demo-reset                 Crea o repara la cuenta demo (SPOTY_DEMO_USER, por defecto «demo») con la
+                             contraseña SPOTY_DEMO_PASSWORD y la deja en su estado inicial (lista de
+                             muestra, algunos Me gusta e historial). Solo toca datos de la cuenta demo.
+                             En ofoserv lo ejecuta cada noche el timer spotyofo-demo-reset.
 
 Opción --password-stdin: lee la contraseña de la entrada estándar (para scripts de prueba).
 Opción --no-claim (create-admin): no asigna los datos anteriores al nuevo administrador.
@@ -21,6 +25,7 @@ import getpass
 import sys
 
 import accounts
+import demo
 from db import connect, init_schema
 
 
@@ -38,13 +43,13 @@ def read_password(args, username):
 
 def find(conn, username):
     with conn.cursor() as cur:
-        cur.execute("SELECT id, username, role, status FROM users WHERE username = %s", (username,))
+        cur.execute("SELECT id, username, role, status, is_demo FROM users WHERE username = %s", (username,))
         return cur.fetchone()
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Cuentas de SpotyOFO")
-    parser.add_argument("command", choices=["list-users", "reset-password", "create-admin", "make-admin"])
+    parser.add_argument("command", choices=["list-users", "reset-password", "create-admin", "make-admin", "demo-reset"])
     parser.add_argument("username", nargs="?")
     parser.add_argument("--password-stdin", action="store_true")
     parser.add_argument("--no-claim", action="store_true")
@@ -56,7 +61,26 @@ def main(argv=None):
     try:
         if args.command == "list-users":
             for user in accounts.list_users(conn):
-                print(f"{user['id']:>4}  {user['username']:<24} {user['role']:<6} {user['status_label']:<10} último ingreso: {user['last_login_at'] or '-'}")
+                tag = "  [demo]" if user["demo"] else ""
+                print(f"{user['id']:>4}  {user['username']:<24} {user['role']:<6} {user['status_label']:<10} último ingreso: {user['last_login_at'] or '-'}{tag}")
+            return 0
+        if args.command == "demo-reset":
+            password = sys.stdin.readline().rstrip("\r\n") if args.password_stdin else demo.demo_password()
+            if not password:
+                raise SystemExit("Falta SPOTY_DEMO_PASSWORD (en .env o /etc/spotyofo.env). No se cambió nada.")
+            try:
+                result = demo.reset(conn, password)
+            except (demo.DemoError, accounts.AccountError) as exc:
+                raise SystemExit(f"Demo sin cambios: {getattr(exc, 'message', exc)}") from exc
+            seeded, removed = result["seeded"], result["removed"]
+            print(
+                f"Demo «{demo.DEMO_USER}» (id {result['user_id']}) reiniciada."
+                f"{' Cuenta creada.' if result['created'] else ''}"
+                f"{' Contraseña actualizada.' if result['password_changed'] else ''}"
+                f" Borrado: {removed['playlists']} listas, {removed['likes']} Me gusta, {removed['history']} reproducciones."
+                f" Inicial: lista «{demo.SEED_PLAYLIST}» con {seeded['tracks']} canciones, {seeded['likes']} Me gusta,"
+                f" {seeded['history']} en el historial."
+            )
             return 0
         if not args.username:
             parser.error("Falta el nombre de usuario.")
@@ -86,6 +110,8 @@ def main(argv=None):
                 user = find(conn, username)
                 if not user:
                     raise SystemExit(f"No existe la cuenta «{username}».")
+                if user.get("is_demo"):
+                    raise SystemExit("La cuenta demo no puede ser administradora.")
                 with conn.cursor() as cur:
                     cur.execute(
                         "UPDATE users SET role = 'admin', status = 'active', approved_at = COALESCE(approved_at, NOW()) WHERE id = %s",

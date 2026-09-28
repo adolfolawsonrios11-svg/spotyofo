@@ -71,11 +71,13 @@
           <div class="user-menu" id="user-menu" role="menu" aria-labelledby="user-btn" hidden>
             <p class="user-menu-head" id="user-menu-head"></p>
             <a role="menuitem" href="#/admin" id="user-admin" data-admin-only hidden>Administrar cuentas <span class="count-badge" id="user-admin-count" hidden></span></a>
-            <a role="menuitem" href="/account/password">Cambiar contraseña</a>
+            <a role="menuitem" href="/account/password" id="user-password">Cambiar contraseña</a>
+            <p class="user-menu-note" id="user-demo-note" hidden>Cuenta demo: la contraseña es fija y los cambios se reinician cada noche.</p>
             <button type="button" role="menuitem" id="user-logout">Cerrar sesión</button>
           </div>
         </div>
       </header>
+      <p class="demo-banner" id="demo-banner" role="status" hidden><span class="demo-chip">Cuenta demo</span> <span>Estás usando la cuenta demo. Los cambios se reinician cada noche.</span></p>
       <main id="view" class="view" tabindex="-1"></main>
     </div>
 
