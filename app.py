@@ -18,6 +18,7 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 import accounts
 import adminpin
 import devicelibrary
+import genres
 import localfiles
 import playlistedit
 import uploads
@@ -1030,14 +1031,37 @@ def related(track_id):
     return jsonify(items)
 
 
+@app.get("/api/genres")
+def genre_list():
+    """Géneros de las canciones cargadas (normalizados), con cantidad y duración."""
+    index = genres.get_index(get_db())
+    items = [genres.public(item) for item in index.values()]
+    return jsonify(genres=items, total=sum(1 for item in items if item["slug"] != genres.NO_GENRE_SLUG))
+
+
+@app.get("/api/genres/<slug>")
+def genre_detail(slug):
+    if not genres.valid_slug(slug):
+        return fail("Género no encontrado.", 404)
+    item = genres.get_index(get_db()).get(slug)
+    if not item:
+        return fail("Género no encontrado.", 404)
+    ids = item["track_ids"]
+    placeholders = ", ".join(["%s"] * len(ids))
+    tracks = tracks_where(
+        f"WHERE t.id IN ({placeholders})",
+        tuple(ids),
+        order="a.name, al.year, al.title, t.track_number, t.id",
+    )
+    return jsonify(genre=genres.public(item), tracks=tracks)
+
+
 @app.get("/api/search")
 def search():
     q = str(request.args.get("q", "")).strip()[:120]
     if len(q) < 1:
-        with get_db().cursor() as cur:
-            cur.execute("SELECT DISTINCT genre FROM tracks ORDER BY genre")
-            genres = [row["genre"] for row in cur.fetchall()]
-        return jsonify(query="", genres=genres, tracks=[], albums=[], artists=[], playlists=[])
+        items = [genres.public(item) for item in genres.get_index(get_db()).values()]
+        return jsonify(query="", genres=items, tracks=[], albums=[], artists=[], playlists=[])
     pattern = like_pattern(q)
     track_limit = 300 if request.args.get("all") == "1" else 24
     with get_db().cursor() as cur:

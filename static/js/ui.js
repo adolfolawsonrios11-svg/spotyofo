@@ -1,14 +1,5 @@
-import { api, onSessionExpired, setCsrf } from "./api.js?v=20260927s";
-import { EQ_FREQS, EQ_LABELS, EQ_PRESETS } from "./player.js?v=20260927s";
-
-const GENRES = {
-  "Dream pop": ["#12343a", "#8ef0d0"],
-  "Electrónica": ["#1a1033", "#ff4f92"],
-  Ambient: ["#243036", "#d5e2ea"],
-  "Ritmo latino": ["#3a220c", "#ffb15a"],
-  Jazz: ["#160e28", "#b7a6ff"],
-  Alternativa: ["#241612", "#ff6a4a"],
-};
+import { api, onSessionExpired, setCsrf } from "./api.js?v=20260927g";
+import { EQ_FREQS, EQ_LABELS, EQ_PRESETS } from "./player.js?v=20260927g";
 
 const known = new Map();
 const UPLOAD_EXT = [".mp3", ".m4a", ".mp4", ".aac", ".flac", ".ogg", ".oga", ".opus", ".wav"];
@@ -59,6 +50,8 @@ export function createUI(player) {
   let drawerMode = null;
   let toastTimer = 0;
   let searchTimer = 0;
+  let genreState = null; // vista de género: { item, tracks, sort, filter }
+  let genresOrder = "count";
   let seeking = false;
   let modalSubmit = null;
   let menuTrack = null;
@@ -146,6 +139,87 @@ export function createUI(player) {
     return `${count} ${count === 1 ? one : many}`;
   }
 
+  // Duración larga legible: «42 min», «3 h 12 min».
+  function longDuration(ms) {
+    const minutes = Math.max(0, Math.round((ms || 0) / 60000));
+    if (minutes < 60) return `${minutes} min`;
+    const hours = Math.floor(minutes / 60);
+    const rest = minutes % 60;
+    return rest ? `${hours} h ${rest} min` : `${hours} h`;
+  }
+
+  function genreInitials(name) {
+    const words = String(name || "").split(/\s+/).filter(Boolean);
+    if (words.length > 1) return (words[0][0] + words[1][0]).toUpperCase();
+    return (words[0] || "?").slice(0, 2).replace(/^./, (ch) => ch.toUpperCase());
+  }
+
+  function genreStyle(item) {
+    return `--a:${esc(item.accent_a)};--b:${esc(item.accent_b)}`;
+  }
+
+  // Tamaño del texto según la palabra más larga, para no cortar «Alternativa» a la mitad.
+  function genreFit(name) {
+    const longest = Math.max(0, ...String(name || "").split(/\s+/).map((word) => word.length));
+    if (longest >= 14) return "fit-xs";
+    if (longest >= 10) return "fit-s";
+    return "";
+  }
+
+  function genreTile(item) {
+    return `<a class="genre ${genreFit(item.name)}" href="#/genre/${esc(item.slug)}" style="${genreStyle(item)}">
+      <span class="genre-name">${esc(item.name)}</span>
+      <small>${plural(item.count, "canción", "canciones")}</small>
+    </a>`;
+  }
+
+  const SIDE_GENRES_KEY = "spotyofo-side-genres";
+  const SIDE_GENRES_MAX = 12;
+
+  function sideGenresOpen() {
+    try {
+      return localStorage.getItem(SIDE_GENRES_KEY) !== "0";
+    } catch {
+      return true;
+    }
+  }
+
+  function sideGenres(list, activeSlug) {
+    if (!list.length) return "";
+    const open = sideGenresOpen();
+    const named = list.filter((item) => item.slug !== "sin-genero").length;
+    const shown = list.slice(0, SIDE_GENRES_MAX);
+    const more = list.length > shown.length;
+    return `<div class="side-group">
+      <button type="button" class="side-fold" id="genre-fold" aria-expanded="${open}" aria-controls="side-genres" title="Géneros">
+        <span class="side-fold-label">Géneros</span>
+        <span class="side-fold-count" aria-label="${plural(named, "género", "géneros")}">${named}</span>
+        <svg class="chev" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
+      </button>
+      <div class="side-genres" id="side-genres" ${open ? "" : "hidden"}>
+        ${shown.map((item) => `<a class="side-item genre-item ${item.slug === activeSlug ? "is-active" : ""}" href="#/genre/${esc(item.slug)}" title="${esc(item.name)} · ${plural(item.count, "canción", "canciones")}"${item.slug === activeSlug ? ' aria-current="page"' : ""}>
+          <span class="dot gdot" style="${genreStyle(item)}" aria-hidden="true">${esc(genreInitials(item.name))}</span>
+          <span class="side-text"><span class="side-name">${esc(item.name)}</span><small>${plural(item.count, "canción", "canciones")}</small></span>
+        </a>`).join("")}
+        ${more ? `<a class="side-item side-more" href="#/genres"><span class="dot more-dot" aria-hidden="true">···</span><span>Ver los ${list.length} géneros</span></a>` : ""}
+      </div>
+    </div>`;
+  }
+
+  function toggleSideGenres() {
+    const fold = document.getElementById("genre-fold");
+    const list = document.getElementById("side-genres");
+    if (!fold || !list) return;
+    const open = fold.getAttribute("aria-expanded") !== "true";
+    fold.setAttribute("aria-expanded", String(open));
+    list.hidden = !open;
+    try {
+      localStorage.setItem(SIDE_GENRES_KEY, open ? "1" : "0");
+    } catch {
+      /* almacenamiento bloqueado */
+    }
+  }
+
   function trackKey(track) {
     return track.source === "device" ? `d:${track.id}` : `t:${track.id}`;
   }
@@ -165,17 +239,19 @@ export function createUI(player) {
   }
 
   async function paintSide() {
-    const lists = await api.playlists();
+    const [lists, genreData] = await Promise.all([api.playlists(), api.genres().catch(() => ({ genres: [] }))]);
     const mine = lists.filter((item) => !item.editorial);
     const editorial = lists.filter((item) => item.editorial);
     const current = parts();
     const activeId = current[0] === "playlist" ? current[1] : "";
+    const activeGenre = current[0] === "genre" ? decodeURIComponent(current[1] || "") : "";
     const likesOn = current[0] === "likes";
     side.innerHTML = `
       <a class="side-item ${likesOn ? "is-active" : ""}" href="#/likes"><span class="dot heart" aria-hidden="true">♡</span><span>Me gusta</span></a>
       ${mine.map((item) => sideItem(item, activeId)).join("")}
       ${editorial.length ? `<p class="side-label">Editorial</p>` : ""}
       ${editorial.map((item) => sideItem(item, activeId)).join("")}
+      ${sideGenres(genreData.genres || [], activeGenre)}
     `;
   }
 
@@ -188,7 +264,7 @@ export function createUI(player) {
 
   function markNav() {
     const name = parts()[0] || "home";
-    const key = name === "likes" || name === "playlist" ? "library" : name;
+    const key = name === "likes" || name === "playlist" ? "library" : name === "genre" || name === "genres" ? "search" : name;
     document.querySelectorAll(".nav-link").forEach((link) => {
       const active = link.dataset.nav === (key || "home");
       link.classList.toggle("is-active", active);
@@ -330,11 +406,9 @@ export function createUI(player) {
     const data = await api.search(query);
     remember(data.tracks);
     if (!query) {
-      const genres = data.genres.map((genre) => {
-        const colors = GENRES[genre] || ["#1b1e27", "#2ef2c0"];
-        return `<button type="button" class="genre" style="--a:${colors[0]};--b:${colors[1]}" data-action="genre" data-genre="${esc(genre)}">${esc(genre)}</button>`;
-      }).join("");
-      return `<h1 class="hello">Buscar</h1><p class="lead">Escribe un nombre o elige un género.</p><div class="genre-grid">${genres}</div>`;
+      const list = data.genres || [];
+      return `<h1 class="hello">Buscar</h1><p class="lead">Escribe un nombre o elige un género.</p>
+        ${list.length ? `<section class="block"><div class="block-head"><h2>Explorar por género</h2>${list.length > 1 ? `<a class="head-link" href="#/genres">Ver todos</a>` : ""}</div><div class="genre-grid">${list.map(genreTile).join("")}</div></section>` : `<p class="empty">Todavía no hay canciones con género.</p>`}`;
     }
     const empty = !data.tracks.length && !data.albums.length && !data.artists.length && !data.playlists.length;
     if (empty) return `<h1 class="hello">Sin resultados</h1><p class="lead">No hay coincidencias para «${esc(query)}».</p>`;
@@ -356,8 +430,9 @@ export function createUI(player) {
   }
 
   async function renderLibrary() {
-    const [lists, likes] = await Promise.all([api.playlists(), api.likes()]);
+    const [lists, likes, genreData] = await Promise.all([api.playlists(), api.likes(), api.genres().catch(() => ({ genres: [] }))]);
     remember(likes);
+    const genreCount = (genreData.genres || []).filter((item) => item.slug !== "sin-genero").length;
     const mine = lists.filter((item) => !item.editorial);
     const editorial = lists.filter((item) => item.editorial);
     return `
@@ -365,6 +440,7 @@ export function createUI(player) {
       <p class="lead">Tus Me gusta y tus listas son solo tuyos: nadie más los ve.</p>
       <div class="library-grid">
         <a class="lib-card likes" href="#/likes"><strong>Me gusta</strong><span>${likes.length} ${likes.length === 1 ? "canción" : "canciones"}</span></a>
+        ${genreCount ? `<a class="lib-card genres" href="#/genres"><strong>Géneros</strong><span>${plural(genreCount, "género", "géneros")}</span></a>` : ""}
         <button type="button" class="lib-card create" data-action="create-playlist"><strong>Nueva lista</strong><span>Armar una selección</span></button>
       </div>
       ${mine.length ? section("Tus listas", mine.map((item) => card(`#/playlist/${item.id}`, item.cover_url, item.name, item.description || "Lista personal", "play-playlist", item.id)).join("")) : ""}
@@ -395,6 +471,125 @@ export function createUI(player) {
       </header>
       ${tracks.length ? `<div class="tracklist">${tracks.map((track, index) => trackRow(track, index, { album: true, context: "likes", contextId: "likes" })).join("")}</div>` : `<p class="empty">Todavía no marcaste canciones. El corazón de cada fila las guarda aquí.</p>`}
     `;
+  }
+
+  const GENRE_SORTS = [
+    ["artist", "Artista"],
+    ["title", "Título"],
+    ["album", "Álbum"],
+    ["plays", "Más escuchadas"],
+    ["recent", "Recién agregadas"],
+    ["duration", "Duración"],
+  ];
+  const GENRE_SORT_KEY = "spotyofo-genre-sort";
+
+  function savedGenreSort() {
+    try {
+      const value = localStorage.getItem(GENRE_SORT_KEY);
+      return GENRE_SORTS.some(([key]) => key === value) ? value : "artist";
+    } catch {
+      return "artist";
+    }
+  }
+
+  function sortGenreTracks(tracks, sort) {
+    const list = tracks.slice();
+    const text = (a, b) => String(a || "").localeCompare(String(b || ""), "es", { sensitivity: "base", numeric: true });
+    const byAlbum = (a, b) => text(a.album, b.album) || (a.track_number || 0) - (b.track_number || 0) || a.id - b.id;
+    if (sort === "title") list.sort((a, b) => text(a.title, b.title) || text(a.artist, b.artist));
+    else if (sort === "album") list.sort(byAlbum);
+    else if (sort === "plays") list.sort((a, b) => (b.plays || 0) - (a.plays || 0) || text(a.title, b.title));
+    else if (sort === "recent") list.sort((a, b) => b.id - a.id);
+    else if (sort === "duration") list.sort((a, b) => (b.duration_ms || 0) - (a.duration_ms || 0));
+    return list; // «artist»: el orden del servidor (artista, año del disco, disco, número de pista)
+  }
+
+  function genreRows() {
+    if (!genreState) return [];
+    const query = fold(genreState.filter.trim());
+    const sorted = sortGenreTracks(genreState.tracks, genreState.sort);
+    if (!query) return sorted;
+    return sorted.filter((track) => fold(`${track.title} ${track.artist} ${track.album}`).includes(query));
+  }
+
+  function genreListHtml() {
+    const rows = genreRows();
+    if (!rows.length) return `<p class="empty">Ninguna canción de ${esc(genreState.item.name)} coincide con «${esc(genreState.filter.trim())}».</p>`;
+    return `<div class="tracklist">${rows.map((track, index) => trackRow(track, index, { album: true, context: "genre", contextId: genreState.item.slug })).join("")}</div>`;
+  }
+
+  function paintGenreList() {
+    const box = document.getElementById("genre-tracks");
+    if (!box || !genreState) return;
+    box.innerHTML = genreListHtml();
+    const shown = genreRows().length;
+    const note = document.getElementById("genre-count");
+    if (note) note.textContent = genreState.filter.trim() ? `${shown} de ${genreState.tracks.length}` : "";
+    markPlaying();
+  }
+
+  async function renderGenre(slug) {
+    const data = await api.genre(slug);
+    remember(data.tracks);
+    const item = data.genre;
+    genreState = { item, tracks: data.tracks, sort: savedGenreSort(), filter: "" };
+    const meta = [
+      plural(item.count, "canción", "canciones"),
+      item.artists ? plural(item.artists, "artista", "artistas") : "",
+      longDuration(item.duration_ms),
+    ].filter(Boolean).join(" · ");
+    const sorts = GENRE_SORTS.map(([key, label]) => `<option value="${key}" ${key === genreState.sort ? "selected" : ""}>${label}</option>`).join("");
+    return `
+      <header class="sheet genre-sheet" style="${genreStyle(item)}">
+        <div class="genre-art ${genreFit(item.name)}" aria-hidden="true"><span>${esc(item.name)}</span></div>
+        <div>
+          <p class="kicker">Género</p>
+          <h1>${esc(item.name)}</h1>
+          <p class="sheet-sub">${esc(meta)}</p>
+          ${data.tracks.length ? `<div class="sheet-actions">
+            <button type="button" class="btn solid" data-action="play-genre">Reproducir</button>
+            <button type="button" class="btn ghost shuffle" data-action="play-genre-shuffle">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16 4h5v5M4 18l5.5-5.5M14 14l6 6M4 6l6 6M16 20h5v-5"/></svg>
+              Aleatorio
+            </button>
+            ${addButton("genre", item.slug)}
+          </div>` : ""}
+        </div>
+      </header>
+      ${data.tracks.length > 1 ? `<div class="list-tools">
+        <label class="list-filter">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6"/><path d="m16 16 4 4"/></svg>
+          <input type="search" id="genre-filter" placeholder="Buscar en ${esc(item.name)}" aria-label="Buscar en ${esc(item.name)}" autocomplete="off">
+        </label>
+        <span class="list-count" id="genre-count" aria-live="polite"></span>
+        <label class="list-sort">Ordenar por
+          <select id="genre-sort">${sorts}</select>
+        </label>
+      </div>` : ""}
+      <div id="genre-tracks">${genreListHtml()}</div>
+    `;
+  }
+
+  async function renderGenres() {
+    const data = await api.genres();
+    const list = (data.genres || []).slice();
+    if (genresOrder === "name") list.sort((a, b) => (a.slug === "sin-genero") - (b.slug === "sin-genero") || a.name.localeCompare(b.name, "es", { sensitivity: "base" }));
+    const named = list.filter((item) => item.slug !== "sin-genero").length;
+    return `
+      <h1 class="hello">Géneros</h1>
+      <p class="lead">${plural(named, "género", "géneros")} en la música del servidor. Una canción con varias etiquetas aparece en cada una.</p>
+      ${list.length > 1 ? `<div class="seg" role="group" aria-label="Ordenar géneros">
+        <button type="button" class="seg-btn" data-action="genres-order" data-order="count" aria-pressed="${genresOrder === "count"}">Más canciones</button>
+        <button type="button" class="seg-btn" data-action="genres-order" data-order="name" aria-pressed="${genresOrder === "name"}">A–Z</button>
+      </div>` : ""}
+      ${list.length ? `<div class="genre-grid">${list.map(genreTile).join("")}</div>` : `<p class="empty">Todavía no hay canciones con género.</p>`}
+    `;
+  }
+
+  function genreQueue() {
+    const rows = [...view.querySelectorAll("#genre-tracks .track")].map((row) => trackFromRow(row)).filter(Boolean);
+    remember(rows);
+    return rows;
   }
 
   async function renderPlaylist(id) {
@@ -886,6 +1081,7 @@ export function createUI(player) {
     if (orderTimer) flushOrder();
     closePicker();
     const [name, arg] = parts();
+    if (name !== "genre") genreState = null;
     if (name !== "search" && document.activeElement !== searchInput) searchInput.value = "";
     markNav();
     paintSide().catch(() => {});
@@ -907,6 +1103,8 @@ export function createUI(player) {
       return show(() => renderEquipo(rel));
     }
     if (name === "likes") return show(renderLikes);
+    if (name === "genres") return show(renderGenres);
+    if (name === "genre" && arg) return show(() => renderGenre(decodeURIComponent(arg)));
     if (name === "playlist" && arg) return show(() => renderPlaylist(arg));
     if (name === "album" && arg) return show(() => renderAlbum(arg));
     if (name === "artist" && arg) return show(() => renderArtist(arg));
@@ -940,7 +1138,7 @@ export function createUI(player) {
     if (context === "playlist") return playAction("play-playlist", contextId, index);
     if (context === "artist") return playAction("play-artist", contextId, index);
     if (context === "likes") return playAction("play-likes", null, index);
-    if (context === "search" || context === "recent" || context === "uploads" || context === "equipo") {
+    if (context === "search" || context === "recent" || context === "uploads" || context === "equipo" || context === "genre") {
       const rows = [...view.querySelectorAll(".track")].map((row) => trackFromRow(row)).filter(Boolean);
       remember(rows);
       await player.playContext(rows, index);
@@ -1965,7 +2163,7 @@ export function createUI(player) {
     }
     const title = view.querySelector(".sheet h1")?.textContent.trim() || "";
     const subtitle = `${plural(rows.length, "canción", "canciones")} de «${title}»`;
-    if (kind === "likes") {
+    if (kind === "likes" || kind === "genre") {
       const keys = rows.map((row) => trackFromRow(row)).filter(Boolean).map(trackKey);
       await openPicker({ subtitle, keys });
       return;
@@ -2118,6 +2316,21 @@ export function createUI(player) {
     if (action === "menu") {
       const track = trackFromRow(target);
       if (track) openMenu(target, track);
+      return;
+    }
+    if (action === "play-genre" || action === "play-genre-shuffle") {
+      const tracks = genreQueue();
+      if (!tracks.length) {
+        showToast("No hay canciones para reproducir");
+        return;
+      }
+      if (action === "play-genre-shuffle") await player.playShuffled(tracks);
+      else await player.playContext(tracks, 0, { shuffle: false });
+      return;
+    }
+    if (action === "genres-order") {
+      genresOrder = target.dataset.order === "name" ? "name" : "count";
+      await show(renderGenres);
       return;
     }
     if (action === "genre") {
@@ -2290,6 +2503,24 @@ export function createUI(player) {
     });
     view.addEventListener("click", (event) => {
       onViewClick(event).catch((error) => showToast(error.message));
+    });
+    side.addEventListener("click", (event) => {
+      if (event.target.closest("#genre-fold")) toggleSideGenres();
+    });
+    view.addEventListener("change", (event) => {
+      if (event.target.id !== "genre-sort" || !genreState) return;
+      genreState.sort = event.target.value;
+      try {
+        localStorage.setItem(GENRE_SORT_KEY, genreState.sort);
+      } catch {
+        /* almacenamiento bloqueado */
+      }
+      paintGenreList();
+    });
+    view.addEventListener("input", (event) => {
+      if (event.target.id !== "genre-filter" || !genreState) return;
+      genreState.filter = event.target.value;
+      paintGenreList();
     });
     view.addEventListener("contextmenu", (event) => {
       const row = event.target.closest(".track");

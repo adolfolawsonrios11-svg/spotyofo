@@ -100,6 +100,8 @@ export const api = {
   toggleLike: (id, shownLiked = false) => request(`/api/likes/${id}`, { method: "POST", body: JSON.stringify({ shown_liked: Boolean(shownLiked) }) }),
   play: (trackId) => request("/api/plays", { method: "POST", body: JSON.stringify({ track_id: trackId }) }),
   related: (id) => request(`/api/tracks/${id}/related`),
+  genres: () => request("/api/genres"),
+  genre: (slug) => request(`/api/genres/${encodeURIComponent(slug)}`),
   search: (q, all = false) => request(`/api/search?q=${encodeURIComponent(q)}${all ? "&all=1" : ""}`),
   me: () => request("/api/me"),
   logout: () => request("/api/auth/logout", { method: "POST" }),
