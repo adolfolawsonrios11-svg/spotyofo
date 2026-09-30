@@ -113,6 +113,8 @@ export const api = {
   equipoPlaylist: (path, playlistId) => request("/api/equipo/playlists", { method: "POST", body: JSON.stringify({ path, playlist_id: Number(playlistId) }) }),
   removeDeviceTrack: (id, path) => request(`/api/playlists/${id}/device`, { method: "DELETE", body: JSON.stringify({ path }) }),
   uploads: () => request("/api/uploads"),
+  // Página de subidas en formato liviano (limit 0 = todo lo que falta desde offset).
+  uploadsPage: (offset = 0, limit = 0) => request(`/api/uploads?lite=1&offset=${offset}${limit ? `&limit=${limit}` : ""}`),
   upload: uploadFile,
   deleteTrack: (id) => request(`/api/tracks/${id}`, { method: "DELETE" }),
 };

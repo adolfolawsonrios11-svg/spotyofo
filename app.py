@@ -1,5 +1,6 @@
 """SpotyOFO: reproductor con cuentas propias aprobadas por el administrador."""
 
+import gzip
 import hmac
 import logging
 import os
@@ -273,6 +274,44 @@ def security_headers(response):
         headers["Vary"] = "Cookie"
     elif status in (301, 302, 303, 307, 308, 401, 403):
         headers["Cache-Control"] = "no-store"
+    return response
+
+
+# ---------- compresión de las respuestas JSON de la API ----------
+# Las listas largas (p. ej. 1500 canciones, ~1 MB) bajan a ~10 % con gzip. Se omite /api/me
+# porque lleva el token CSRF (evita ataques tipo BREACH); el resto no mezcla secretos con texto
+# que el visitante controle.
+GZIP_MIN_BYTES = 1024
+GZIP_SKIP_PATHS = {"/api/me"}
+
+
+def accepts_gzip():
+    for part in request.headers.get("Accept-Encoding", "").split(","):
+        name, _, params = part.strip().partition(";")
+        if name.strip().lower() == "gzip":
+            return params.replace(" ", "").lower() not in ("q=0", "q=0.0", "q=0.00", "q=0.000")
+    return False
+
+
+@app.after_request
+def compress_json(response):
+    if (
+        response.status_code != 200
+        or response.direct_passthrough
+        or response.mimetype != "application/json"
+        or "Content-Encoding" in response.headers
+        or not is_api()
+        or request.path in GZIP_SKIP_PATHS
+    ):
+        return response
+    data = response.get_data()
+    if len(data) < GZIP_MIN_BYTES:
+        return response
+    response.headers.add("Vary", "Accept-Encoding")
+    if not accepts_gzip():
+        return response
+    response.set_data(gzip.compress(data, compresslevel=5, mtime=0))
+    response.headers["Content-Encoding"] = "gzip"
     return response
 
 
@@ -563,12 +602,15 @@ def admin_delete_user(user_id):
 
 # ---------- catálogo y datos por usuario ----------
 
-def tracks_where(extra_sql="", params=(), order="t.id", limit=None):
+def tracks_where(extra_sql="", params=(), order="t.id", limit=None, offset=None):
     sql = TRACK_SQL + " " + extra_sql
     params = (uid(), *params)
     if order:
         sql += f" ORDER BY {order}"
-    if limit:
+    if offset:
+        sql += " LIMIT %s OFFSET %s"
+        params = (*params, limit or 10**9, offset)
+    elif limit:
         sql += " LIMIT %s"
         params = (*params, limit)
     with get_db().cursor() as cur:
@@ -1226,12 +1268,44 @@ def equipo_image():
 
 # ---------- subidas: ver es para todos; subir y eliminar, solo administradores ----------
 
+# Campos que necesita el reproductor y las listas; «lite» omite el resto (slug, portada interna, colores...).
+LITE_TRACK_FIELDS = (
+    "id", "title", "artist", "artist_id", "album", "album_id", "duration_ms", "audio_url",
+    "cover_url", "liked", "song_key", "source", "genre", "bpm", "musical_key",
+)
+UPLOADS_MAX_PAGE = 5000
+
+
+def int_arg(name, default, low, high):
+    raw = request.args.get(name)
+    if raw is None or raw == "":
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        raise ValueError(name) from None
+    return max(low, min(high, value))
+
+
 @app.get("/api/uploads")
 def list_uploads():
-    tracks = tracks_where("WHERE t.source = 'user'", order="t.uploaded_at DESC, t.id DESC")
+    """Canciones subidas. ?lite=1 entrega solo los campos necesarios; ?limit= y ?offset= paginan."""
+    try:
+        limit = int_arg("limit", None, 1, UPLOADS_MAX_PAGE)
+        offset = int_arg("offset", 0, 0, 10**9)
+    except ValueError as exc:
+        return fail(f"Parámetro no válido: {exc}.", 400)
+    with get_db().cursor() as cur:
+        cur.execute("SELECT COUNT(*) AS n FROM tracks WHERE source = 'user'")
+        total = int(cur.fetchone()["n"])
+    tracks = tracks_where("WHERE t.source = 'user'", order="t.uploaded_at DESC, t.id DESC", limit=limit, offset=offset)
+    if request.args.get("lite") == "1":
+        tracks = [{key: track.get(key) for key in LITE_TRACK_FIELDS} for track in tracks]
     return jsonify(
         admin=is_admin(),
         max_mb=uploads.MAX_FILE_BYTES // (1024 * 1024),
+        total=total,
+        offset=offset,
         tracks=tracks,
     )
 

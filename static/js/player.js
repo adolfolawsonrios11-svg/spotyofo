@@ -1,4 +1,4 @@
-import { api } from "./api.js?v=20260930a";
+import { api } from "./api.js?v=20260930b";
 
 export const EQ_FREQS = [31, 62, 125, 250, 500, 1000, 2000, 4000, 8000, 16000];
 export const EQ_LABELS = ["31", "62", "125", "250", "500", "1k", "2k", "4k", "8k", "16k"];
@@ -178,6 +178,7 @@ export function createPlayer() {
     playing: false,
     orderBefore: null,
   };
+  let ctxSeq = 0; // identifica la última cola armada con playContext/playShuffled
   const cfg = loadAudio();
   const engine = resolveEngine(cfg.engine);
   const volumeControl = canSetVolume();
@@ -1090,6 +1091,7 @@ export function createPlayer() {
   }
 
   function playContext(tracks, index = 0, options = {}) {
+    ctxSeq += 1;
     if (options.shuffle === false) state.shuffle = false;
     if (options.shuffle === true) state.shuffle = true;
     state.queue = tracks.slice();
@@ -1108,6 +1110,7 @@ export function createPlayer() {
   }
 
   function playShuffled(tracks) {
+    ctxSeq += 1;
     const list = tracks.slice();
     state.shuffle = true;
     invalidateNext();
@@ -1295,6 +1298,38 @@ export function createPlayer() {
     invalidateNext();
     savePrefs();
     emit("state", snapshot());
+  }
+
+  function contextId() {
+    return ctxSeq;
+  }
+
+  // Completa la cola que armó playContext/playShuffled (arranque rápido: primero suena la primera pista
+  // y el resto llega después). Solo actúa si esa cola sigue siendo la vigente. Con aleatorio activo,
+  // mezcla lo que falta por sonar junto con lo nuevo, así el orden aleatorio abarca toda la lista.
+  function extendQueue(tracks, ctx) {
+    if (ctx !== ctxSeq || !tracks || !tracks.length) return 0;
+    const keyOf = (item) => `${item.source === "device" ? "d" : "t"}:${item.id}`;
+    const have = new Set(state.queue.map(keyOf));
+    const fresh = tracks.filter((item) => {
+      const key = keyOf(item);
+      if (have.has(key)) return false;
+      have.add(key);
+      return true;
+    });
+    if (!fresh.length) return 0;
+    if (state.shuffle && state.index >= 0) {
+      const played = state.queue.slice(0, state.index + 1);
+      const upcoming = state.queue.slice(state.index + 1).concat(fresh);
+      shuffleArray(upcoming);
+      state.queue = played.concat(upcoming);
+    } else {
+      state.queue = state.queue.concat(fresh);
+    }
+    if (state.orderBefore) state.orderBefore = state.orderBefore.concat(fresh);
+    invalidateNext();
+    emit("state", snapshot());
+    return fresh.length;
   }
 
   function enqueue(track) {
@@ -1543,6 +1578,8 @@ export function createPlayer() {
     snapshot,
     playContext,
     playShuffled,
+    contextId,
+    extendQueue,
     toggle,
     next,
     previous,

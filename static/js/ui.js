@@ -1,5 +1,5 @@
-import { api, onSessionExpired, setCsrf } from "./api.js?v=20260930a";
-import { EQ_FREQS, EQ_LABELS, EQ_PRESETS } from "./player.js?v=20260930a";
+import { api, onSessionExpired, setCsrf } from "./api.js?v=20260930b";
+import { EQ_FREQS, EQ_LABELS, EQ_PRESETS } from "./player.js?v=20260930b";
 
 const known = new Map();
 const UPLOAD_EXT = [".mp3", ".m4a", ".mp4", ".aac", ".flac", ".ogg", ".oga", ".opus", ".wav"];
@@ -648,6 +648,12 @@ export function createUI(player) {
   }
 
   const UP_SHUFFLE_ICON = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16 4h5v5M4 18l5.5-5.5M14 14l6 6M4 6l6 6M16 20h5v-5"/></svg>`;
+  const UP_FIRST_PAGE = 100; // pistas que se piden primero: la lista aparece y suena enseguida
+  const UP_PAGE = 2000; // tamaño de cada petición del resto (se piden en segundo plano)
+  const UP_CHUNK = 120; // filas que se pintan por tanda, para no congelar la pantalla
+
+  // Subidas: lo cargado hasta ahora, cuántas filas hay pintadas y la carga del resto en segundo plano.
+  const upl = { token: 0, run: 0, tracks: [], total: 0, admin: false, max_mb: 200, rendered: 0, done: true, rest: Promise.resolve(), restError: null };
 
   // Sin repetidos (por id), conservando el orden en que llegan.
   function uniqueTracks(list) {
@@ -659,11 +665,23 @@ export function createUI(player) {
     });
   }
 
-  function uploadToolbar(count, summary) {
+  function uploadCount() {
+    return upl.done ? upl.tracks.length : Math.max(upl.total, upl.tracks.length);
+  }
+
+  function uploadSummaryText() {
+    const count = uploadCount();
+    if (!count) return "No hay canciones para reproducir";
+    const label = `${count} ${count === 1 ? "canción" : "canciones"}`;
+    return upl.done ? `${label} · ${fmt(upl.tracks.reduce((sum, track) => sum + track.duration_ms, 0))}` : label;
+  }
+
+  function uploadToolbar() {
+    const count = uploadCount();
     const off = count ? "" : " disabled";
     const total = count ? ` (${count})` : "";
     return `<div class="up-toolbar">
-      <p class="fine" id="upload-summary">${summary}</p>
+      <p class="fine" id="upload-summary">${uploadSummaryText()}</p>
       <div class="up-play">
         <button type="button" class="btn solid" data-action="play-uploads"${off} aria-describedby="upload-summary" aria-label="Reproducir todas las canciones subidas${total}">Reproducir todas${total}</button>
         <button type="button" class="btn ghost shuffle" data-action="play-uploads-shuffle"${off} aria-describedby="upload-summary" aria-label="Reproducir las canciones subidas en orden aleatorio">${UP_SHUFFLE_ICON}Aleatorio</button>
@@ -671,20 +689,106 @@ export function createUI(player) {
     </div>`;
   }
 
-  function uploadListHtml(data) {
-    const tracks = uniqueTracks(data.tracks);
-    if (!tracks.length) {
-      return `${uploadToolbar(0, "No hay canciones para reproducir")}
-        <p class="empty">Aún no subiste canciones. Aparecerán aquí, en Buscar, en tus listas y en Me gusta.</p>`;
+  // Actualiza el resumen y el conteo de los botones cuando termina de llegar la lista.
+  function paintUploadToolbar() {
+    const summary = document.getElementById("upload-summary");
+    if (!summary) return;
+    summary.textContent = uploadSummaryText();
+    const count = uploadCount();
+    const all = view.querySelector("[data-action='play-uploads']");
+    if (all) {
+      all.textContent = count ? `Reproducir todas (${count})` : "Reproducir todas";
+      all.setAttribute("aria-label", `Reproducir todas las canciones subidas${count ? ` (${count})` : ""}`);
     }
-    const total = tracks.reduce((sum, track) => sum + track.duration_ms, 0);
-    const summary = `${tracks.length} ${tracks.length === 1 ? "canción" : "canciones"} · ${fmt(total)}`;
-    return `${uploadToolbar(tracks.length, summary)}
-      <div class="tracklist">${tracks.map((track, index) => uploadRow(track, index, data.admin)).join("")}</div>`;
   }
 
-  // «Reproducir todas» / «Aleatorio»: pide la lista al servidor en el momento (incluye lo recién subido
-  // y respeta los permisos de /api/uploads) y arma la cola con el mismo reproductor de siempre.
+  function uploadListHtml() {
+    if (!upl.tracks.length) {
+      return `${uploadToolbar()}
+        <p class="empty">Aún no subiste canciones. Aparecerán aquí, en Buscar, en tus listas y en Me gusta.</p>`;
+    }
+    const first = upl.tracks.slice(0, UP_CHUNK);
+    upl.rendered = first.length;
+    return `${uploadToolbar()}
+      <div class="tracklist">${first.map((track, index) => uploadRow(track, index, upl.admin)).join("")}</div>`;
+  }
+
+  // Pinta por tandas las filas que faltan (sin bloquear la pantalla). Una llamada nueva reemplaza a la anterior.
+  async function syncUploadRows() {
+    const run = ++upl.run;
+    while (upl.rendered < upl.tracks.length) {
+      const list = document.querySelector("#upload-list .tracklist");
+      if (!list || run !== upl.run) return;
+      const from = upl.rendered;
+      const to = Math.min(upl.tracks.length, from + UP_CHUNK);
+      list.insertAdjacentHTML("beforeend", upl.tracks.slice(from, to).map((track, i) => uploadRow(track, from + i, upl.admin)).join(""));
+      upl.rendered = to;
+      markPlaying();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+  }
+
+  // Pide el resto de la lista en segundo plano (nunca rechaza: deja el error en upl.restError).
+  async function fetchUploadsRest(token) {
+    try {
+      for (let guard = 0; token === upl.token && upl.tracks.length < upl.total && guard < 50; guard += 1) {
+        const page = await api.uploadsPage(upl.tracks.length, UP_PAGE);
+        if (token !== upl.token) return;
+        const before = upl.tracks.length;
+        upl.tracks = uniqueTracks(upl.tracks.concat(page.tracks));
+        if (upl.tracks.length === before) break; // nada nuevo (p. ej. se borró una): no seguir pidiendo
+      }
+    } catch (error) {
+      if (token === upl.token) upl.restError = error;
+    } finally {
+      if (token === upl.token) {
+        upl.done = true;
+        paintUploadToolbar();
+        syncUploadRows();
+      }
+    }
+  }
+
+  // Primera página ya, el resto en segundo plano.
+  async function loadUploads() {
+    const token = ++upl.token;
+    const first = await api.uploadsPage(0, UP_FIRST_PAGE);
+    if (token !== upl.token) return;
+    upl.tracks = uniqueTracks(first.tracks);
+    upl.total = Number(first.total) || upl.tracks.length;
+    upl.admin = Boolean(first.admin);
+    upl.max_mb = first.max_mb;
+    upl.rendered = 0;
+    upl.restError = null;
+    upl.done = upl.tracks.length >= upl.total;
+    upl.rest = upl.done ? Promise.resolve() : fetchUploadsRest(token);
+  }
+
+  // Arranca con lo que ya hay cargado (la primera pista suena de inmediato) y completa la cola cuando
+  // llega el resto. «options» pasa directo a player.playContext.
+  function playUploadsFrom(index, options) {
+    const head = upl.tracks.slice();
+    remember(head);
+    const started = player.playContext(head, index, options);
+    if (!upl.done) {
+      const ctx = player.contextId();
+      const token = upl.token;
+      upl.rest.then(() => {
+        if (token !== upl.token) return;
+        if (upl.restError) {
+          showToast("No se pudo cargar toda la lista; sigue lo que ya estaba en la cola");
+          return;
+        }
+        const tail = upl.tracks.slice(head.length);
+        remember(tail);
+        player.extendQueue(tail, ctx);
+      });
+    }
+    return started;
+  }
+
+  // «Reproducir todas» / «Aleatorio». Reproducir todas suena al instante con lo ya cargado y completa la
+  // cola después. Aleatorio espera a tener la lista completa (casi siempre ya llegó) para mezclar todo el conjunto.
   let playingUploads = false;
   async function playUploads(shuffle) {
     if (playingUploads) return;
@@ -695,16 +799,20 @@ export function createUI(player) {
       button.setAttribute("aria-busy", "true");
     });
     try {
-      const data = await api.uploads();
-      const tracks = uniqueTracks(data.tracks);
-      remember(tracks);
-      if (!tracks.length) {
+      if (!upl.tracks.length) {
         showToast("No hay canciones para reproducir");
         await refreshUploadList().catch(() => {});
         return;
       }
-      if (shuffle) await player.playShuffled(tracks);
-      else await player.playContext(tracks, 0, { shuffle: false });
+      if (shuffle) {
+        if (!upl.done) await upl.rest;
+        if (upl.restError) showToast("No se pudo cargar toda la lista; se mezcla lo que hay");
+        const tracks = upl.tracks.slice();
+        remember(tracks);
+        await player.playShuffled(tracks);
+      } else {
+        await playUploadsFrom(0, { shuffle: false });
+      }
     } finally {
       playingUploads = false;
       buttons.forEach((button) => {
@@ -715,7 +823,8 @@ export function createUI(player) {
   }
 
   async function renderUploads() {
-    const data = await api.uploads();
+    await loadUploads();
+    const data = { admin: upl.admin, max_mb: upl.max_mb };
     const panel = data.admin
       ? `<div class="upload-panel">
         <label class="upload-drop" for="upload-input">
@@ -729,20 +838,23 @@ export function createUI(player) {
         <strong>Solo el administrador sube canciones</strong>
         <p>Las canciones subidas son para todos: puedes escucharlas, darles Me gusta y agregarlas a tus listas.</p>
       </div>`;
+    setTimeout(syncUploadRows, 0);
     return `
       <h1 class="hello">${data.admin ? "Subir música" : "Canciones subidas"}</h1>
       <p class="lead">${data.admin ? "Sube archivos desde el teléfono o este equipo. Se leen título, artista, álbum, número de pista, duración y portada." : "Música que el administrador agregó al catálogo compartido."}</p>
       ${panel}
-      <section class="block"><div class="block-head"><h2>${data.admin ? "Archivos subidos" : "Canciones"}</h2></div><div id="upload-list">${uploadListHtml(data)}</div></section>
+      <section class="block"><div class="block-head"><h2>${data.admin ? "Archivos subidos" : "Canciones"}</h2></div><div id="upload-list">${uploadListHtml()}</div></section>
     `;
   }
 
   async function refreshUploadList() {
+    if (!document.getElementById("upload-list")) return;
+    await loadUploads();
     const box = document.getElementById("upload-list");
     if (!box) return;
-    const data = await api.uploads();
-    box.innerHTML = uploadListHtml(data);
+    box.innerHTML = uploadListHtml();
     markPlaying();
+    syncUploadRows();
   }
 
   function confirmDelete(track) {
@@ -1209,6 +1321,11 @@ export function createUI(player) {
     if (context === "playlist") return playAction("play-playlist", contextId, index);
     if (context === "artist") return playAction("play-artist", contextId, index);
     if (context === "likes") return playAction("play-likes", null, index);
+    if (context === "uploads" && upl.tracks.length) {
+      const at = upl.tracks.findIndex((item) => String(item.id) === String(button.dataset.id));
+      await playUploadsFrom(at >= 0 ? at : index);
+      return;
+    }
     if (context === "search" || context === "recent" || context === "uploads" || context === "equipo" || context === "genre") {
       const rows = [...view.querySelectorAll(".track")].map((row) => trackFromRow(row)).filter(Boolean);
       remember(rows);

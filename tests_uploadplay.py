@@ -9,6 +9,7 @@ La cuenta demo solo lee; quien reinicia sus datos es «python manage.py demo-res
 """
 
 import argparse
+import gzip
 import http.cookiejar
 import json
 import os
@@ -177,6 +178,73 @@ if DEMO_PASS:
 else:
     print("(sin SPOTY_DEMO_PASSWORD: se omiten las pruebas de la demo)")
 
+# ---------- lista rápida: compresión, modo ligero y paginación ----------
+lite_need = {"id", "title", "artist", "artist_id", "album", "album_id", "duration_ms", "audio_url", "cover_url", "liked", "song_key", "source"}
+st, h, raw_plain = admin.raw("GET", "/api/uploads", headers={"Accept": "application/json", "X-Requested-With": "SpotyOFO"})
+check("sin Accept-Encoding: respuesta sin comprimir", st == 200 and "gzip" not in h.get("Content-Encoding", "").lower() and json.loads(raw_plain)["tracks"], (st, h.get("Content-Encoding")))
+st, h, raw_gz = admin.raw("GET", "/api/uploads", headers={"Accept": "application/json", "X-Requested-With": "SpotyOFO", "Accept-Encoding": "gzip"})
+check("con Accept-Encoding: gzip -> Content-Encoding gzip y Vary", st == 200 and h.get("Content-Encoding") == "gzip" and "accept-encoding" in h.get("Vary", "").lower(), (st, h.get("Content-Encoding"), h.get("Vary")))
+try:
+    unzipped = gzip.decompress(raw_gz)
+except Exception as e:  # noqa: BLE001
+    unzipped = b""
+check("gzip se descomprime y es el mismo JSON", json.loads(unzipped or b"{}") == json.loads(raw_plain), "")
+check("gzip reduce el tamaño (si hay muchas pistas)", len(tracks) < 100 or len(raw_gz) < len(raw_plain) * 0.4, (len(raw_gz), len(raw_plain)))
+check("gzip: Content-Length coincide con el cuerpo", int(h.get("Content-Length", -1)) == len(raw_gz), (h.get("Content-Length"), len(raw_gz)))
+check("gzip: Cache-Control no-store se conserva", "no-store" in h.get("Cache-Control", ""), h.get("Cache-Control"))
+st, h, raw_me = admin.raw("GET", "/api/me", headers={"Accept": "application/json", "X-Requested-With": "SpotyOFO", "Accept-Encoding": "gzip"})
+check("/api/me nunca se comprime (token CSRF)", st == 200 and "Content-Encoding" not in h, (st, h.get("Content-Encoding")))
+st, h, raw_q0 = admin.raw("GET", "/api/uploads", headers={"Accept": "application/json", "X-Requested-With": "SpotyOFO", "Accept-Encoding": "gzip;q=0"})
+check("gzip;q=0 se respeta (sin comprimir)", st == 200 and "Content-Encoding" not in h, (st, h.get("Content-Encoding")))
+st, h, _ = anon.raw("GET", "/api/uploads", headers={"Accept-Encoding": "gzip", "X-Requested-With": "SpotyOFO"})
+check("sin sesión con gzip: sigue 401", st == 401, st)
+st, lite = admin.api("GET", "/api/uploads?lite=1")
+lt = lite.get("tracks", [])
+check("lite: mismas pistas y mismo orden que la lista completa", st == 200 and ids(lite) == ids(up), (st, len(lt), len(tracks)))
+check("lite: trae los campos que necesita el reproductor", all(lite_need <= set(t) for t in lt), [lite_need - set(t) for t in lt][:2])
+check("lite: es más ligero que la lista completa", not lt or max(len(t) for t in lt) < min(len(t) for t in tracks), (len(lt[0]) if lt else 0, len(tracks[0])))
+check("lite: los valores coinciden con la lista completa", all(all(t.get(k) == f.get(k) for k in lite_need) for t, f in zip(lt, tracks)), "")
+check("lite: conserva admin/max_mb y agrega total/offset", lite.get("admin") is True and "max_mb" in lite and lite.get("total") == len(tracks) and lite.get("offset") == 0, {k: lite.get(k) for k in ("admin", "max_mb", "total", "offset")})
+check("lista completa sin parámetros: total = cantidad", up.get("total", len(tracks)) == len(tracks), up.get("total"))
+page_size = max(1, min(7, len(tracks) // 3 or 1))
+got, off, guard = [], 0, 0
+while guard < 5000:
+    guard += 1
+    st, pg = admin.api("GET", f"/api/uploads?lite=1&offset={off}&limit={page_size}")
+    if st != 200 or not pg.get("tracks"):
+        break
+    got += ids(pg)
+    off += len(pg["tracks"])
+    if off >= pg.get("total", 0):
+        break
+check("paginación: las páginas suman la lista completa, sin repetidas y en orden", got == ids(up), (len(got), len(ids(up))))
+st, pg = admin.api("GET", f"/api/uploads?lite=1&offset={len(tracks)}&limit=5")
+check("paginación: offset pasado el final -> lista vacía con total", st == 200 and pg.get("tracks") == [] and pg.get("total") == len(tracks), (st, pg.get("total")))
+st, pg = admin.api("GET", "/api/uploads?lite=1&limit=1")
+check("paginación: limit=1 devuelve una sola pista", st == 200 and len(pg.get("tracks", [])) == 1 and ids(pg) == ids(up)[:1], st)
+for bad in ("limit=abc", "offset=x", "limit=1.5"):
+    st, pg = admin.api("GET", f"/api/uploads?lite=1&{bad}")
+    check(f"parámetro no numérico ({bad}) -> 400", st == 400, st)
+# Los números fuera de rango se ajustan (misma convención que el resto de la API).
+st, pg = admin.api("GET", "/api/uploads?lite=1&limit=0")
+check("limit=0 se ajusta a 1", st == 200 and len(pg.get("tracks", [])) == 1, (st, len(pg.get("tracks", []))))
+st, pg = admin.api("GET", "/api/uploads?lite=1&offset=-5&limit=2")
+check("offset negativo se ajusta a 0", st == 200 and ids(pg) == ids(up)[:2] and pg.get("offset") == 0, (st, pg.get("offset")))
+st, pg = admin.api("GET", "/api/uploads?lite=1&limit=99999")
+check("limit enorme se acota (nunca más de 5000)", st == 200 and len(pg.get("tracks", [])) == min(len(tracks), 5000), (st, len(pg.get("tracks", []))))
+st, pgu = u.api("GET", "/api/uploads?lite=1&offset=0&limit=3")
+check("normal: lite/paginación con los mismos permisos (admin=false)", st == 200 and pgu.get("admin") is False and ids(pgu) == ids(up)[:3], (st, pgu.get("admin")))
+st, h, rawg = u.raw("GET", "/api/uploads?lite=1", headers={"Accept": "application/json", "X-Requested-With": "SpotyOFO", "Accept-Encoding": "gzip"})
+check("normal: gzip + lite devuelve las mismas pistas", st == 200 and ids(json.loads(gzip.decompress(rawg))) == ids(up), st)
+if DEMO_PASS:
+    st, pgd = d.api("GET", "/api/uploads?lite=1&offset=0&limit=3")
+    check("demo: lite/paginación con admin=false y mismas pistas", st == 200 and pgd.get("admin") is False and ids(pgd) == ids(up)[:3], (st, pgd.get("admin")))
+    st, h, rawd = d.raw("GET", "/api/uploads?lite=1", headers={"Accept": "application/json", "X-Requested-With": "SpotyOFO", "Accept-Encoding": "gzip"})
+    check("demo: gzip + lite devuelve las mismas pistas", st == 200 and ids(json.loads(gzip.decompress(rawd))) == ids(up), st)
+before = total_plays(admin)
+admin.api("GET", "/api/uploads?lite=1&limit=50")
+check("pedir la lista ligera no suma reproducciones", total_plays(admin) == before, "")
+
 # ---------- archivos estáticos ----------
 st, h, body = anon.raw("GET", "/login")
 st, h, body = admin.raw("GET", "/")
@@ -190,7 +258,12 @@ if m:
     st, h, body = admin.raw("GET", f"/static/js/ui.js?v={m.group(1)}")
     js = body.decode("utf-8", "replace")
     check("ui.js incluye la acción play-uploads", "play-uploads-shuffle" in js and "Reproducir todas" in js, "")
-    check("ui.js importa módulos con la versión nueva", "?v=20260930a" in js and "?v=20260928a" not in js, "")
+    check("ui.js pide la lista por páginas y extiende la cola", "uploadsPage" in js and "extendQueue" in js and "UP_FIRST_PAGE" in js, "")
+    st, h, body = admin.raw("GET", f"/static/js/player.js?v={m.group(1)}")
+    check("player.js expone extendQueue", b"extendQueue" in body, "")
+    st, h, body = admin.raw("GET", f"/static/js/api.js?v={m.group(1)}")
+    check("api.js tiene uploadsPage", b"uploadsPage" in body, "")
+    check("ui.js importa módulos con la versión nueva", "?v=20260930b" in js and "?v=20260930a" not in js and "?v=20260928a" not in js, "")
 
 # ---------- limpieza ----------
 st, data = admin.api("GET", "/api/admin/users")

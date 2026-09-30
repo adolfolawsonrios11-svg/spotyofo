@@ -1778,3 +1778,6 @@ a.genre small { font-family: var(--sans); font-size: 13px; letter-spacing: 0; op
   .up-play { width: 100%; }
   .up-play .btn { flex: 1 1 0; justify-content: center; text-align: center; padding-left: 12px; padding-right: 12px; }
 }
+
+/* Subir: con cientos de filas, el navegador solo dibuja las que están a la vista. */
+.track.up-row { content-visibility: auto; contain-intrinsic-size: auto 64px; }
