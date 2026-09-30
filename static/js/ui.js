@@ -1,5 +1,5 @@
-import { api, onSessionExpired, setCsrf } from "./api.js?v=20260928a";
-import { EQ_FREQS, EQ_LABELS, EQ_PRESETS } from "./player.js?v=20260928a";
+import { api, onSessionExpired, setCsrf } from "./api.js?v=20260930a";
+import { EQ_FREQS, EQ_LABELS, EQ_PRESETS } from "./player.js?v=20260930a";
 
 const known = new Map();
 const UPLOAD_EXT = [".mp3", ".m4a", ".mp4", ".aac", ".flac", ".ogg", ".oga", ".opus", ".wav"];
@@ -647,13 +647,71 @@ export function createUI(player) {
     </div>`;
   }
 
+  const UP_SHUFFLE_ICON = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16 4h5v5M4 18l5.5-5.5M14 14l6 6M4 6l6 6M16 20h5v-5"/></svg>`;
+
+  // Sin repetidos (por id), conservando el orden en que llegan.
+  function uniqueTracks(list) {
+    const seen = new Set();
+    return (list || []).filter((track) => {
+      if (!track || seen.has(track.id)) return false;
+      seen.add(track.id);
+      return true;
+    });
+  }
+
+  function uploadToolbar(count, summary) {
+    const off = count ? "" : " disabled";
+    const total = count ? ` (${count})` : "";
+    return `<div class="up-toolbar">
+      <p class="fine" id="upload-summary">${summary}</p>
+      <div class="up-play">
+        <button type="button" class="btn solid" data-action="play-uploads"${off} aria-describedby="upload-summary" aria-label="Reproducir todas las canciones subidas${total}">Reproducir todas${total}</button>
+        <button type="button" class="btn ghost shuffle" data-action="play-uploads-shuffle"${off} aria-describedby="upload-summary" aria-label="Reproducir las canciones subidas en orden aleatorio">${UP_SHUFFLE_ICON}Aleatorio</button>
+      </div>
+    </div>`;
+  }
+
   function uploadListHtml(data) {
-    if (!data.tracks.length) {
-      return `<p class="empty">Aún no subiste canciones. Aparecerán aquí, en Buscar, en tus listas y en Me gusta.</p>`;
+    const tracks = uniqueTracks(data.tracks);
+    if (!tracks.length) {
+      return `${uploadToolbar(0, "No hay canciones para reproducir")}
+        <p class="empty">Aún no subiste canciones. Aparecerán aquí, en Buscar, en tus listas y en Me gusta.</p>`;
     }
-    const total = data.tracks.reduce((sum, track) => sum + track.duration_ms, 0);
-    return `<p class="fine">${data.tracks.length} ${data.tracks.length === 1 ? "canción" : "canciones"} · ${fmt(total)}</p>
-      <div class="tracklist">${data.tracks.map((track, index) => uploadRow(track, index, data.admin)).join("")}</div>`;
+    const total = tracks.reduce((sum, track) => sum + track.duration_ms, 0);
+    const summary = `${tracks.length} ${tracks.length === 1 ? "canción" : "canciones"} · ${fmt(total)}`;
+    return `${uploadToolbar(tracks.length, summary)}
+      <div class="tracklist">${tracks.map((track, index) => uploadRow(track, index, data.admin)).join("")}</div>`;
+  }
+
+  // «Reproducir todas» / «Aleatorio»: pide la lista al servidor en el momento (incluye lo recién subido
+  // y respeta los permisos de /api/uploads) y arma la cola con el mismo reproductor de siempre.
+  let playingUploads = false;
+  async function playUploads(shuffle) {
+    if (playingUploads) return;
+    playingUploads = true;
+    const buttons = [...view.querySelectorAll("[data-action^='play-uploads']")];
+    buttons.forEach((button) => {
+      button.disabled = true;
+      button.setAttribute("aria-busy", "true");
+    });
+    try {
+      const data = await api.uploads();
+      const tracks = uniqueTracks(data.tracks);
+      remember(tracks);
+      if (!tracks.length) {
+        showToast("No hay canciones para reproducir");
+        await refreshUploadList().catch(() => {});
+        return;
+      }
+      if (shuffle) await player.playShuffled(tracks);
+      else await player.playContext(tracks, 0, { shuffle: false });
+    } finally {
+      playingUploads = false;
+      buttons.forEach((button) => {
+        button.removeAttribute("aria-busy");
+        button.disabled = false;
+      });
+    }
   }
 
   async function renderUploads() {
@@ -2370,6 +2428,10 @@ export function createUI(player) {
         return;
       }
       await player.playContext(rows, 0);
+      return;
+    }
+    if (action === "play-uploads" || action === "play-uploads-shuffle") {
+      await playUploads(action === "play-uploads-shuffle");
       return;
     }
     if (action === "play-search") {
