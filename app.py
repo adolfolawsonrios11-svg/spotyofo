@@ -4,6 +4,7 @@ import gzip
 import hmac
 import logging
 import os
+import re
 import secrets
 import time
 from datetime import datetime, timedelta
@@ -12,6 +13,7 @@ from pathlib import Path
 from urllib.parse import quote, urlparse
 
 from flask import Flask, g, jsonify, redirect, render_template, request, send_file, session
+from flask.sessions import SecureCookieSessionInterface
 from werkzeug.exceptions import HTTPException
 from werkzeug.middleware.proxy_fix import ProxyFix
 
@@ -35,6 +37,22 @@ REGISTRATION_OPEN = os.environ.get("SPOTY_REGISTRATION", "1").strip() != "0"
 
 app = Flask(__name__)
 app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 0
+
+
+class StaticQuietSessionInterface(SecureCookieSessionInterface):
+    """Las portadas y el audio no renuevan la cookie de sesión ni llevan «Vary: Cookie».
+
+    Flask reenvía una cookie nueva en cada respuesta; con «Vary: Cookie» el navegador nunca
+    reutiliza una portada guardada y la vuelve a pedir entera. La sesión sigue verificándose
+    en cada petición (puerta de acceso) y se renueva con las llamadas a la API."""
+
+    def save_session(self, app, session, response):
+        if request.path.startswith(("/static/covers/", "/static/audio/")) and not session.modified:
+            return None
+        return super().save_session(app, session, response)
+
+
+app.session_interface = StaticQuietSessionInterface()
 # 200 MB por archivo + margen para el sobre multipart. Se sube un archivo por petición.
 app.config["MAX_CONTENT_LENGTH"] = uploads.MAX_FILE_BYTES + 2 * 1024 * 1024
 app.config["SESSION_COOKIE_HTTPONLY"] = True
@@ -251,6 +269,9 @@ def gate():
     return None
 
 
+HASHED_COVER = re.compile(r"^/static/covers/user/[0-9a-f]{16}\.(?:jpg|png|webp)$")
+
+
 @app.after_request
 def security_headers(response):
     headers = response.headers
@@ -270,8 +291,15 @@ def security_headers(response):
         headers["Cache-Control"] = "no-store"
     elif path.startswith(("/static/audio/", "/static/covers/")) and status in (200, 206, 304):
         # Privado: ni Cloudflare ni otro proxy compartido guardan archivos que exigen sesión.
-        headers["Cache-Control"] = "private, max-age=3600"
-        headers["Vary"] = "Cookie"
+        # Las portadas subidas se llaman por el hash de su contenido: nunca cambian, se guardan una semana.
+        if HASHED_COVER.match(path):
+            # Sin «Vary: Cookie»: la cookie de sesión cambia con cada llamada a la API y el navegador
+            # descartaría la portada guardada. «private» ya impide cachés compartidas, y al cerrar
+            # sesión «Clear-Site-Data» vacía la caché del navegador. Sin sesión, /static/ responde 401.
+            headers["Cache-Control"] = "private, max-age=604800, immutable"
+        else:
+            headers["Cache-Control"] = "private, max-age=3600"
+            headers["Vary"] = "Cookie"
     elif status in (301, 302, 303, 307, 308, 401, 403):
         headers["Cache-Control"] = "no-store"
     return response

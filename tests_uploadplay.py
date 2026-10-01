@@ -245,6 +245,38 @@ before = total_plays(admin)
 admin.api("GET", "/api/uploads?lite=1&limit=50")
 check("pedir la lista ligera no suma reproducciones", total_plays(admin) == before, "")
 
+# ---------- portadas: carga diferida y caché ----------
+st, h, body = admin.raw("GET", "/static/js/ui.js?v=x")
+uijs = body.decode("utf-8", "replace")
+check("ui.js: portadas con loading lazy/eager y decoding async", 'decoding="async"' in uijs and 'loading="${eager ? "eager" : "lazy"}"' in uijs and "function coverImg" in uijs, "")
+check("ui.js: ya no quedan <img> de portadas sin atributos de carga", len(re.findall(r"<img src=", uijs)) == 1, len(re.findall(r"<img src=", uijs)))
+check("ui.js: portadas con tamaño reservado (width/height) en filas y cola", all(f"size: {n}" in uijs for n in (36, 42, 48)), "")
+st, home = admin.api("GET", "/api/home")
+hashed = next((a["cover_url"] for a in home.get("albums", []) if re.match(r"^/static/covers/user/[0-9a-f]{16}\.(jpg|png|webp)$", a["cover_url"])), None)
+if hashed is None:
+    hashed = next((t["cover_url"] for t in tracks if re.match(r"^/static/covers/user/[0-9a-f]{16}\.(jpg|png|webp)$", t["cover_url"])), None)
+if hashed:
+    st, h, body = admin.raw("GET", hashed)
+    check("portada con hash: 200 y Cache-Control private, una semana, immutable", st == 200 and h.get("Cache-Control") == "private, max-age=604800, immutable", (st, h.get("Cache-Control")))
+    check("portada con hash: sin «Vary: Cookie» (la caché del navegador se reutiliza)", "cookie" not in h.get("Vary", "").lower(), h.get("Vary"))
+    check("portada con hash: no renueva la cookie de sesión", "Set-Cookie" not in h and "set-cookie" not in {k.lower() for k in h}, [k for k in h if k.lower() == "set-cookie"])
+    st, h2, body2 = admin.raw("GET", hashed, headers={"If-None-Match": next((v for k, v in h.items() if k.lower() == "etag"), "")})
+    check("portada con hash: If-None-Match -> 304", st == 304, st)
+    st, h3, _ = anon.raw("GET", hashed)
+    check("portada con hash: sin sesión sigue dando 401", st == 401, st)
+else:
+    print("(no hay portadas con hash en esta base: se omiten las pruebas de portada con hash)")
+st, h, body = admin.raw("GET", "/static/covers/lista-1.svg")
+check("portada de catálogo (svg): private, 1 h y Vary: Cookie como antes", st == 200 and h.get("Cache-Control") == "private, max-age=3600" and "cookie" in h.get("Vary", "").lower(), (st, h.get("Cache-Control"), h.get("Vary")))
+st, h, _ = anon.raw("GET", "/static/covers/lista-1.svg")
+check("portada de catálogo sin sesión: 401", st == 401, st)
+st, h, _ = admin.raw("GET", "/api/health")
+check("la API sigue renovando la sesión (Set-Cookie en /api/*)", any(k.lower() == "set-cookie" for k in h), list(h))
+if DEMO_PASS:
+    if hashed:
+        st, h, _ = d.raw("GET", hashed)
+        check("demo: ve las portadas con hash con las mismas cabeceras", st == 200 and h.get("Cache-Control") == "private, max-age=604800, immutable", (st, h.get("Cache-Control")))
+
 # ---------- archivos estáticos ----------
 st, h, body = anon.raw("GET", "/login")
 st, h, body = admin.raw("GET", "/")
@@ -263,7 +295,7 @@ if m:
     check("player.js expone extendQueue", b"extendQueue" in body, "")
     st, h, body = admin.raw("GET", f"/static/js/api.js?v={m.group(1)}")
     check("api.js tiene uploadsPage", b"uploadsPage" in body, "")
-    check("ui.js importa módulos con la versión nueva", "?v=20260930b" in js and "?v=20260930a" not in js and "?v=20260928a" not in js, "")
+    check("ui.js importa módulos con la versión nueva", "?v=20260930c" in js and "?v=20260930b" not in js and "?v=20260930a" not in js, "")
 
 # ---------- limpieza ----------
 st, data = admin.api("GET", "/api/admin/users")

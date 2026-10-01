@@ -1,5 +1,5 @@
-import { api, onSessionExpired, setCsrf } from "./api.js?v=20260930b";
-import { EQ_FREQS, EQ_LABELS, EQ_PRESETS } from "./player.js?v=20260930b";
+import { api, onSessionExpired, setCsrf } from "./api.js?v=20260930c";
+import { EQ_FREQS, EQ_LABELS, EQ_PRESETS } from "./player.js?v=20260930c";
 
 const known = new Map();
 const UPLOAD_EXT = [".mp3", ".m4a", ".mp4", ".aac", ".flac", ".ogg", ".oga", ".opus", ".wav"];
@@ -257,7 +257,7 @@ export function createUI(player) {
 
   function sideItem(item, activeId) {
     return `<a class="side-item ${String(item.id) === activeId ? "is-active" : ""}" href="#/playlist/${item.id}">
-      <img src="${esc(item.cover_url)}" alt="">
+      ${coverImg(item.cover_url, { size: 36, lazy: true })}
       <span>${esc(item.name)}</span>
     </a>`;
   }
@@ -276,7 +276,9 @@ export function createUI(player) {
   async function show(builder) {
     view.innerHTML = `<p class="loading">Cargando el catálogo…</p>`;
     try {
+      eagerCovers = EAGER_COVERS;
       view.innerHTML = await builder();
+      eagerCovers = 0;
       view.scrollTop = 0;
       window.scrollTo(0, 0);
       markPlaying();
@@ -285,10 +287,22 @@ export function createUI(player) {
     }
   }
 
+  // Portadas: las primeras de cada pantalla se piden de inmediato (las que se ven al abrir);
+  // el resto solo cuando se acercan a la vista, así Inicio no pide cientos de imágenes a la vez.
+  // Con tamaño fijo (size) se declara width/height para que el diseño no salte al llegar la imagen.
+  const EAGER_COVERS = 8;
+  let eagerCovers = 0;
+  function coverImg(src, opts = {}) {
+    const eager = !opts.lazy && (opts.high || eagerCovers > 0);
+    if (eager && !opts.high) eagerCovers -= 1;
+    const dims = opts.size ? ` width="${opts.size}" height="${opts.size}"` : "";
+    return `<img src="${esc(src)}" alt=""${dims} decoding="async" loading="${eager ? "eager" : "lazy"}"${opts.high ? ' fetchpriority="high"' : ""}>`;
+  }
+
   function card(href, cover, title, subtitle, action, id) {
     return `<article class="card">
       <div class="art">
-        <a href="${href}"><img src="${esc(cover)}" alt=""></a>
+        <a href="${href}">${coverImg(cover)}</a>
         <button type="button" class="fab" data-action="${action}" data-id="${id}" aria-label="Reproducir ${esc(title)}">▶</button>
       </div>
       <a class="card-title" href="${href}">${esc(title)}</a>
@@ -353,7 +367,7 @@ export function createUI(player) {
 
   function collectionHead(item, kindLabel, action, id, extra, tools = "") {
     return `<header class="sheet" style="--a:${item.accent_a};--b:${item.accent_b}">
-      <img src="${esc(item.cover_url)}" alt="">
+      ${coverImg(item.cover_url, { high: true })}
       <div>
         <p class="kicker">${esc(kindLabel)}</p>
         <h1>${esc(item.title || item.name)}</h1>
@@ -378,7 +392,7 @@ export function createUI(player) {
       <p class="date-label">${esc(data.date_label)}</p>
       <h1 class="hello">${esc(data.greeting)}</h1>
       ${featured ? `<section class="hero" style="--a:${featured.accent_a};--b:${featured.accent_b}">
-        <img src="${esc(featured.cover_url)}" alt="">
+        ${coverImg(featured.cover_url, { high: true })}
         <div>
           <p class="kicker">Lista editorial</p>
           <h2>${esc(featured.name)}</h2>
@@ -617,7 +631,7 @@ export function createUI(player) {
     remember(item.top);
     return `
       <header class="artist-hero" style="--a:${item.accent_a};--b:${item.accent_b}">
-        <img src="${esc(item.cover_url)}" alt="">
+        ${coverImg(item.cover_url, { high: true })}
         <div>
           <p class="kicker">${esc(item.genre)} · ${esc(item.origin)}</p>
           <h1>${esc(item.name)}</h1>
@@ -634,7 +648,7 @@ export function createUI(player) {
     remember([track]);
     return `<div class="track up-row${admin ? "" : " no-delete"}" data-id="${track.id}" data-song="${esc(track.song_key || "")}">
       <button type="button" class="up-cover" data-action="play-track" data-id="${track.id}" data-context="uploads" data-context-id="uploads" data-index="${index}" aria-label="Reproducir ${esc(track.title)}">
-        <img src="${esc(track.cover_url)}" alt="">
+        ${coverImg(track.cover_url, { size: 48 })}
       </button>
       <div class="track-main">
         <button type="button" class="track-title" data-action="play-track" data-id="${track.id}" data-context="uploads" data-context-id="uploads" data-index="${index}">${esc(track.title)}</button>
@@ -960,7 +974,7 @@ export function createUI(player) {
     return `
       <div class="crumbs">${crumbs}</div>
       <header class="sheet" style="--a:#10243a;--b:#2ef2c0">
-        <img src="${esc(data.cover_url)}" alt="">
+        ${coverImg(data.cover_url, { high: true })}
         <div>
           <p class="kicker">Archivo de Equipo</p>
           <h1>${esc(data.name)}</h1>
@@ -1471,7 +1485,7 @@ export function createUI(player) {
     drawerBody.innerHTML = `${autoplay}<ol class="queue">${snap.queue.map((track, index) => `
       <li class="${index === snap.index ? "is-current" : ""}">
         <button type="button" data-action="queue-play" data-index="${index}" ${index === snap.index ? 'aria-current="true"' : ""}>
-          <img src="${esc(track.cover_url)}" alt="">
+          ${coverImg(track.cover_url, { size: 42, lazy: true })}
           <span><strong>${esc(track.title)}</strong><small>${esc(track.artist)}</small></span>
         </button>
         <button type="button" class="icon-btn more" data-action="queue-menu" data-index="${index}" aria-label="Más opciones para ${esc(track.title)}" aria-haspopup="menu">···</button>
@@ -2185,7 +2199,7 @@ export function createUI(player) {
       const has = Boolean(pickerState.single && list.contains);
       return `<li>
         <button type="button" class="picker-item ${has ? "has-it" : ""}" data-pick="${list.id}">
-          <img src="${esc(list.cover_url)}" alt="" loading="lazy">
+          ${coverImg(list.cover_url, { size: 48, lazy: true })}
           <span class="picker-text">
             <strong>${esc(list.name)}</strong>
             <small>${plural(list.track_count, "canción", "canciones")}${has ? " · Ya está aquí" : ""}</small>
