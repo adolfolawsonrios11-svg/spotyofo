@@ -1,5 +1,5 @@
-import { api, onSessionExpired, setCsrf } from "./api.js?v=20260930c";
-import { EQ_FREQS, EQ_LABELS, EQ_PRESETS } from "./player.js?v=20260930c";
+import { api, onSessionExpired, setCsrf } from "./api.js?v=20260930d";
+import { EQ_FREQS, EQ_LABELS, EQ_PRESETS } from "./player.js?v=20260930d";
 
 const known = new Map();
 const UPLOAD_EXT = [".mp3", ".m4a", ".mp4", ".aac", ".flac", ".ogg", ".oga", ".opus", ".wav"];
@@ -1078,6 +1078,23 @@ export function createUI(player) {
     } catch {
       /* sin caché disponible */
     }
+  }
+
+  let updating = false;
+
+  async function updateApp() {
+    if (updating) return;
+    updating = true;
+    closeUserMenu();
+    showToast("Buscando actualización…");
+    const result = typeof window.spotyUpdate === "function" ? await window.spotyUpdate() : "offline";
+    if (result === "reload") {
+      showToast("Actualizando…");
+      location.reload();
+      return;
+    }
+    updating = false;
+    showToast(result === "current" ? "Ya tienes la última versión" : "No se pudo buscar la actualización");
   }
 
   async function logout() {
@@ -3025,6 +3042,10 @@ export function createUI(player) {
     userBtn.addEventListener("click", () => (userMenu.hidden ? openUserMenu() : closeUserMenu(true)));
     userMenu.addEventListener("keydown", onUserMenuKey);
     userMenu.addEventListener("click", (event) => {
+      if (event.target.closest("#user-update")) {
+        updateApp();
+        return;
+      }
       if (event.target.closest("#user-logout")) {
         logout();
         return;

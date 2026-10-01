@@ -1,24 +1,53 @@
-import { createPlayer } from "./player.js?v=20260930c";
-import { createUI } from "./ui.js?v=20260930c";
+import { createPlayer } from "./player.js?v=20260930d";
+import { createUI } from "./ui.js?v=20260930d";
 
 const player = createPlayer();
 const ui = createUI(player);
 ui.boot();
 
-// El service worker solo funciona en contexto seguro (HTTPS o localhost).
 // La app instalada en Windows a menudo restaura la ventana anterior sin volver a pedir los
-// archivos. Al mostrarse, compara la versión con el servidor y recarga si hay una nueva.
-if ("serviceWorker" in navigator && window.isSecureContext) {
-  const asset = document.querySelector('meta[name="asset-version"]')?.content || "";
-  let reloading = false;
+// archivos. Se compara la versión del servidor y, si cambió, se vacía la caché y se recarga.
+const assetVersion = document.querySelector('meta[name="asset-version"]')?.content || "";
+let reloading = false;
 
-  function reloadOnce() {
-    if (reloading || sessionStorage.getItem("spotyofo-reloading") === "1") return;
-    reloading = true;
-    sessionStorage.setItem("spotyofo-reloading", "1");
-    location.reload();
+function reloadOnce() {
+  if (reloading || sessionStorage.getItem("spotyofo-reloading") === "1") return;
+  reloading = true;
+  sessionStorage.setItem("spotyofo-reloading", "1");
+  location.reload();
+}
+
+async function clearAppCaches() {
+  if (!window.caches) return;
+  const keys = await caches.keys();
+  await Promise.all(keys.map((key) => caches.delete(key)));
+}
+
+// "current" ya está al día; "reload" hay versión nueva (el llamador recarga); "offline" no hubo red.
+window.spotyUpdate = async function spotyUpdate() {
+  try {
+    const registration = "serviceWorker" in navigator ? await navigator.serviceWorker.getRegistration() : null;
+    if (registration) {
+      await registration.update();
+      registration.waiting?.postMessage("skip-waiting");
+    }
+    const response = await fetch("/sw.js", { cache: "no-store" });
+    if (!response.ok) return "offline";
+    const text = await response.text();
+    const match = text.match(/const VERSION = "([0-9a-f]+)"/);
+    const remote = match ? match[1] : "";
+    if (assetVersion && remote === assetVersion) {
+      sessionStorage.removeItem("spotyofo-reloading");
+      return "current";
+    }
+    await clearAppCaches();
+    return "reload";
+  } catch {
+    return "offline";
   }
+};
 
+if ("serviceWorker" in navigator && window.isSecureContext) {
   let hadController = Boolean(navigator.serviceWorker.controller);
   navigator.serviceWorker.addEventListener("controllerchange", () => {
     if (!hadController) {
@@ -29,25 +58,14 @@ if ("serviceWorker" in navigator && window.isSecureContext) {
   });
 
   window.addEventListener("load", () => {
-    const script = asset ? `/sw.js?v=${encodeURIComponent(asset)}` : "/sw.js";
+    const script = assetVersion ? `/sw.js?v=${encodeURIComponent(assetVersion)}` : "/sw.js";
     navigator.serviceWorker.register(script, { scope: "/", updateViaCache: "none" })
       .then((registration) => {
         const pull = async () => {
-          try {
-            await registration.update();
-            const response = await fetch(script, { cache: "no-store" });
-            const text = await response.text();
-            const match = text.match(/const VERSION = "([0-9a-f]+)"/);
-            if (!match || !asset || match[1] === asset) {
-              sessionStorage.removeItem("spotyofo-reloading");
-              return;
-            }
-            reloadOnce();
-          } catch {
-            // Sin red la app sigue con la versión que ya tiene.
-          }
+          const result = await window.spotyUpdate();
+          if (result === "reload") reloadOnce();
         };
-        pull();
+        registration.update().then(pull).catch(() => {});
         document.addEventListener("visibilitychange", () => {
           if (document.visibilityState === "visible") pull();
         });
