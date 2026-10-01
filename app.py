@@ -698,7 +698,10 @@ def service_worker():
     body = path.read_text(encoding="utf-8").replace("__ASSET_V__", ASSET_VERSION)
     response = app.response_class(body, mimetype="application/javascript")
     response.headers["Service-Worker-Allowed"] = "/"
-    response.headers["Cache-Control"] = "no-cache"
+    # Sin esto Cloudflare guarda /sw.js unas horas y la app instalada no ve la versión nueva.
+    response.headers["Cache-Control"] = "no-store, max-age=0"
+    response.headers["CDN-Cache-Control"] = "no-store"
+    response.headers["Cloudflare-CDN-Cache-Control"] = "no-store"
     return response
 
 
