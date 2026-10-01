@@ -6,6 +6,7 @@ import logging
 import os
 import re
 import secrets
+import subprocess
 import time
 from datetime import datetime, timedelta
 from functools import wraps
@@ -82,6 +83,27 @@ def compute_asset_version():
 
 
 ASSET_VERSION = compute_asset_version()
+
+
+def compute_app_version():
+    """Versión que ve el usuario: el commit que está corriendo. Si no hay Git, el sello de los archivos."""
+    try:
+        done = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=ROOT_DIR,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        value = done.stdout.strip()
+        if value:
+            return value
+    except (OSError, subprocess.CalledProcessError):
+        pass
+    return ASSET_VERSION
+
+
+APP_VERSION = compute_app_version()
 
 DAYS = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo"]
 MONTHS = [
@@ -698,7 +720,7 @@ def service_worker():
     body = path.read_text(encoding="utf-8").replace("__ASSET_V__", ASSET_VERSION)
     response = app.response_class(body, mimetype="application/javascript")
     response.headers["Service-Worker-Allowed"] = "/"
-    # Sin caché: un navegador que aún tenga el worker anterior recibe enseguida la baja.
+    # Sin caché: el navegador compara el worker en cada visita y puede instalar la versión nueva.
     response.headers["Cache-Control"] = "no-store, max-age=0"
     response.headers["CDN-Cache-Control"] = "no-store"
     response.headers["Cloudflare-CDN-Cache-Control"] = "no-store"
@@ -717,7 +739,7 @@ def index():
     except Exception:
         log.exception("No se pudo leer la base de datos")
         return render_template("db_error.html", message="No se pudo conectar con la base de datos. Revisa el servicio MariaDB."), 500
-    response = app.make_response(render_template("index.html", asset_v=ASSET_VERSION))
+    response = app.make_response(render_template("index.html", asset_v=ASSET_VERSION, app_version=APP_VERSION))
     response.headers["Cache-Control"] = "no-cache"
     return response
 

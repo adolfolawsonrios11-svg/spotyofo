@@ -7,7 +7,13 @@
   <meta name="color-scheme" content="dark">
   <meta name="description" content="SpotyOFO: tu música, tus listas y tus Me gusta.">
   <meta name="robots" content="noindex, nofollow">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="SpotyOFO">
+  <meta name="asset-version" content="{{ asset_v }}">
+  <meta name="app-version" content="{{ app_version }}">
   <title>SpotyOFO</title>
+  <link rel="manifest" href="/manifest.webmanifest">
   <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
   <link rel="icon" href="/static/icons/icon-192.png" sizes="192x192" type="image/png">
   <link rel="apple-touch-icon" href="/static/icons/apple-touch-icon.png" sizes="180x180">
@@ -64,8 +70,11 @@
           </button>
           <div class="user-menu" id="user-menu" role="menu" aria-labelledby="user-btn" hidden>
             <p class="user-menu-head" id="user-menu-head"></p>
+            <p class="user-menu-version" id="user-version">Versión {{ app_version }}</p>
             <a role="menuitem" href="#/admin" id="user-admin" data-admin-only hidden>Administrar cuentas <span class="count-badge" id="user-admin-count" hidden></span></a>
             <a role="menuitem" href="/account/password" id="user-password">Cambiar contraseña</a>
+            <button type="button" role="menuitem" id="user-install" hidden>Instalar aplicación</button>
+            <button type="button" role="menuitem" id="user-update">Actualizar</button>
             <p class="user-menu-note" id="user-demo-note" hidden>Cuenta demo: la contraseña es fija y los cambios se reinician cada noche.</p>
             <button type="button" role="menuitem" id="user-logout">Cerrar sesión</button>
           </div>

@@ -1,5 +1,5 @@
-import { api, onSessionExpired, setCsrf } from "./api.js?v=20260930e";
-import { EQ_FREQS, EQ_LABELS, EQ_PRESETS } from "./player.js?v=20260930e";
+import { api, onSessionExpired, setCsrf } from "./api.js?v=20260930f";
+import { EQ_FREQS, EQ_LABELS, EQ_PRESETS } from "./player.js?v=20260930f";
 
 const known = new Map();
 const UPLOAD_EXT = [".mp3", ".m4a", ".mp4", ".aac", ".flac", ".ogg", ".oga", ".opus", ".wav"];
@@ -60,6 +60,7 @@ export function createUI(player) {
   let nowSeeking = false;
   let lastFocus = null;
   let modalFocus = null;
+  let installPrompt = null;
   let outputsLoaded = false;
   let me = null;
   let pendingTimer = 0;
@@ -1077,6 +1078,47 @@ export function createUI(player) {
     } catch {
       /* sin caché disponible */
     }
+  }
+
+  let updating = false;
+
+  function appVersionLabel() {
+    return document.querySelector('meta[name="app-version"]')?.content || "";
+  }
+
+  function showInstall(available) {
+    const button = document.getElementById("user-install");
+    if (button) button.hidden = !available;
+  }
+
+  async function promptInstall() {
+    if (!installPrompt) return;
+    const event = installPrompt;
+    installPrompt = null;
+    showInstall(false);
+    event.prompt();
+    try {
+      await event.userChoice;
+    } catch {
+      /* el navegador cerró el diálogo */
+    }
+  }
+
+  async function updateApp() {
+    if (updating) return;
+    updating = true;
+    closeUserMenu();
+    const version = appVersionLabel();
+    showToast("Buscando actualización…");
+    const result = typeof window.spotyUpdate === "function" ? await window.spotyUpdate() : "offline";
+    if (result === "reload") {
+      showToast("Actualizando…");
+      location.reload();
+      return;
+    }
+    updating = false;
+    if (result === "current") showToast(version ? `Ya tienes la última versión · ${version}` : "Ya tienes la última versión");
+    else showToast("No se pudo buscar la actualización");
   }
 
   async function logout() {
@@ -2981,7 +3023,28 @@ export function createUI(player) {
     onSessionExpired((needs) => location.assign(needs === "setup" ? "/setup" : "/login"));
     userBtn.addEventListener("click", () => (userMenu.hidden ? openUserMenu() : closeUserMenu(true)));
     userMenu.addEventListener("keydown", onUserMenuKey);
+    const installed = window.matchMedia("(display-mode: standalone)").matches || window.navigator.standalone === true;
+    window.addEventListener("beforeinstallprompt", (event) => {
+      if (installed) return;
+      event.preventDefault();
+      installPrompt = event;
+      showInstall(true);
+    });
+    window.addEventListener("appinstalled", () => {
+      installPrompt = null;
+      showInstall(false);
+      showToast("SpotyOFO quedó instalada");
+    });
     userMenu.addEventListener("click", (event) => {
+      if (event.target.closest("#user-install")) {
+        closeUserMenu();
+        promptInstall();
+        return;
+      }
+      if (event.target.closest("#user-update")) {
+        updateApp();
+        return;
+      }
       if (event.target.closest("#user-logout")) {
         logout();
         return;
