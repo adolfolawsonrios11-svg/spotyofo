@@ -87,8 +87,16 @@ PALETTE = {
     "pink": ("#34101f", "#ff7aa8"),
     "brown": ("#2a1c14", "#c98b5a"),
     "steel": ("#1b2530", "#8fa6bd"),
+    # Colores de reserva: solo se usan cuando el color preferido ya esta tomado (nunca por el hash).
+    "lime": ("#1f3005", "#b6e63c"),
+    "sand": ("#2e2a1f", "#d8c9a3"),
+    "coral": ("#3a1612", "#ff7b6b"),
+    "indigo": ("#14173f", "#6475f5"),
+    "teal": ("#0a2f2c", "#14b8a6"),
 }
 HASH_ORDER = ["crimson", "orange", "gold", "green", "aqua", "cyan", "blue", "violet", "magenta", "pink", "brown", "steel", "red"]
+EXTRA_ORDER = ["lime", "sand", "coral", "indigo", "teal"]
+ALL_COLORS = HASH_ORDER + EXTRA_ORDER
 # Colores fijos para géneros comunes (así no cambian ni se repiten entre los más usados).
 GENRE_COLORS = {
     "rock": "crimson", "metal": "steel", "heavy metal": "orange", "hard rock": "gold",
@@ -101,6 +109,14 @@ GENRE_COLORS = {
     "latino": "gold", "reggaeton": "orange", "salsa": "crimson", "cumbia": "green",
     "clasica": "brown", "banda sonora": "steel", "country": "brown", "folk": "green",
     "rock & roll": "red", "dream pop": "aqua", "ritmo latino": "orange", "lo fi": "violet",
+    # Categorias de la biblioteca ordenada (D:\Biblioteca_SpotyOFO): un color fijo cada una, todos distintos.
+    "reggaeton y urbano latino": "orange", "electronica y dance": "cyan", "rock en espanol": "crimson",
+    "nueva ola y clasicos chilenos": "brown", "retro 70s y 80s": "gold", "rock instrumental": "violet",
+    "pop y baladas": "pink", "rock internacional": "red", "hip hop y rap": "aqua", "disco": "magenta",
+}
+LIBRARY_CATEGORIES = {
+    "reggaeton y urbano latino", "electronica y dance", "rock en espanol", "nueva ola y clasicos chilenos",
+    "retro 70s y 80s", "rock instrumental", "pop y baladas", "rock internacional", "hip hop y rap", "disco", "metal",
 }
 SMALL_WORDS = {"de", "del", "la", "el", "y", "and", "n", "of", "the"}
 SPLIT_RE = re.compile(r"\s*(?:;|,|/|\||\\|\x00)\s*")
@@ -198,19 +214,30 @@ def colors(slug, name=""):
 
 
 def assign_colors(items):
-    """Pinta en orden de ranking: si el color preferido ya lo usa un género más grande,
-    toma el siguiente libre de la paleta, para que la barra lateral no repita colores
-    (solo se repiten cuando hay más géneros que colores)."""
+    """Pinta sin repetir colores mientras haya libres (18 colores). Orden de prioridad (estable, por ranking):
+    1) las 11 categorias de la biblioteca, que siempre conservan su color fijo; 2) otros generos con color fijo;
+    3) el resto, que toma su color preferido o el siguiente libre de la paleta.
+    Solo se repiten colores cuando hay mas generos que colores."""
     used = set()
+
+    def tier(item):
+        key = genre_key(item["name"])
+        if key in LIBRARY_CATEGORIES:
+            return 0
+        return 1 if key in GENRE_COLORS else 2
+
+    ordered = []
     for item in items:
         if item["slug"] == NO_GENRE_SLUG:
             item["accent_a"], item["accent_b"] = NO_GENRE_COLORS
-            continue
+        else:
+            ordered.append(item)
+    for item in sorted(ordered, key=tier):
         choice = preferred_color(item["slug"], item["name"])
-        if choice in used and len(used) < len(HASH_ORDER):
-            start = HASH_ORDER.index(choice)
-            for step in range(1, len(HASH_ORDER)):
-                candidate = HASH_ORDER[(start + step) % len(HASH_ORDER)]
+        if choice in used and len(used) < len(ALL_COLORS):
+            start = ALL_COLORS.index(choice)
+            for step in range(1, len(ALL_COLORS)):
+                candidate = ALL_COLORS[(start + step) % len(ALL_COLORS)]
                 if candidate not in used:
                     choice = candidate
                     break
