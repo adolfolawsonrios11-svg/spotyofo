@@ -1,74 +1,25 @@
-import { createPlayer } from "./player.js?v=20260930d";
-import { createUI } from "./ui.js?v=20260930d";
+import { createPlayer } from "./player.js?v=20260930e";
+import { createUI } from "./ui.js?v=20260930e";
 
 const player = createPlayer();
 const ui = createUI(player);
 ui.boot();
 
-// La app instalada en Windows a menudo restaura la ventana anterior sin volver a pedir los
-// archivos. Se compara la versión del servidor y, si cambió, se vacía la caché y se recarga.
-const assetVersion = document.querySelector('meta[name="asset-version"]')?.content || "";
-let reloading = false;
-
-function reloadOnce() {
-  if (reloading || sessionStorage.getItem("spotyofo-reloading") === "1") return;
-  reloading = true;
-  sessionStorage.setItem("spotyofo-reloading", "1");
-  location.reload();
-}
-
-async function clearAppCaches() {
-  if (!window.caches) return;
-  const keys = await caches.keys();
-  await Promise.all(keys.map((key) => caches.delete(key)));
-}
-
-// "current" ya está al día; "reload" hay versión nueva (el llamador recarga); "offline" no hubo red.
-window.spotyUpdate = async function spotyUpdate() {
-  try {
-    const registration = "serviceWorker" in navigator ? await navigator.serviceWorker.getRegistration() : null;
-    if (registration) {
-      await registration.update();
-      registration.waiting?.postMessage("skip-waiting");
-    }
-    const response = await fetch("/sw.js", { cache: "no-store" });
-    if (!response.ok) return "offline";
-    const text = await response.text();
-    const match = text.match(/const VERSION = "([0-9a-f]+)"/);
-    const remote = match ? match[1] : "";
-    if (assetVersion && remote === assetVersion) {
-      sessionStorage.removeItem("spotyofo-reloading");
-      return "current";
-    }
-    await clearAppCaches();
-    return "reload";
-  } catch {
-    return "offline";
-  }
-};
-
-if ("serviceWorker" in navigator && window.isSecureContext) {
-  let hadController = Boolean(navigator.serviceWorker.controller);
-  navigator.serviceWorker.addEventListener("controllerchange", () => {
-    if (!hadController) {
-      hadController = true;
-      return;
-    }
-    reloadOnce();
-  });
-
+// SpotyOFO es un sitio web. Si el navegador todavía tiene el service worker de cuando
+// se podía instalar, se da de baja y se recarga una vez para quedar sin esa caché.
+if ("serviceWorker" in navigator) {
   window.addEventListener("load", () => {
-    const script = assetVersion ? `/sw.js?v=${encodeURIComponent(assetVersion)}` : "/sw.js";
-    navigator.serviceWorker.register(script, { scope: "/", updateViaCache: "none" })
-      .then((registration) => {
-        const pull = async () => {
-          const result = await window.spotyUpdate();
-          if (result === "reload") reloadOnce();
-        };
-        registration.update().then(pull).catch(() => {});
-        document.addEventListener("visibilitychange", () => {
-          if (document.visibilityState === "visible") pull();
-        });
+    navigator.serviceWorker.getRegistrations()
+      .then(async (registrations) => {
+        if (!registrations.length) return;
+        await Promise.all(registrations.map((registration) => registration.unregister()));
+        if (window.caches) {
+          const keys = await caches.keys();
+          await Promise.all(keys.map((key) => caches.delete(key)));
+        }
+        if (sessionStorage.getItem("spotyofo-sw-cleared") === "1") return;
+        sessionStorage.setItem("spotyofo-sw-cleared", "1");
+        location.reload();
       })
       .catch(() => {});
   });

@@ -295,8 +295,8 @@ if m:
     check("player.js expone extendQueue", b"extendQueue" in body, "")
     st, h, body = admin.raw("GET", f"/static/js/api.js?v={m.group(1)}")
     check("api.js tiene uploadsPage", b"uploadsPage" in body, "")
-    check("ui.js importa módulos con la versión nueva", "?v=20260930d" in js and "?v=20260930c" not in js and "?v=20260930b" not in js, "")
-    check("el menú de perfil ofrece Actualizar", 'id="user-update"' in html and ">Actualizar<" in html, "")
+    check("ui.js importa módulos con la versión nueva", "?v=20260930e" in js and "?v=20260930d" not in js and "?v=20260930c" not in js, "")
+    check("el sitio no ofrece instalarse como app", "install-app" not in html and "manifest.webmanifest" not in html and "user-update" not in html, "")
 
 # ---------- limpieza ----------
 st, data = admin.api("GET", "/api/admin/users")

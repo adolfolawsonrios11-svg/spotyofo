@@ -1,5 +1,5 @@
-import { api, onSessionExpired, setCsrf } from "./api.js?v=20260930d";
-import { EQ_FREQS, EQ_LABELS, EQ_PRESETS } from "./player.js?v=20260930d";
+import { api, onSessionExpired, setCsrf } from "./api.js?v=20260930e";
+import { EQ_FREQS, EQ_LABELS, EQ_PRESETS } from "./player.js?v=20260930e";
 
 const known = new Map();
 const UPLOAD_EXT = [".mp3", ".m4a", ".mp4", ".aac", ".flac", ".ogg", ".oga", ".opus", ".wav"];
@@ -60,7 +60,6 @@ export function createUI(player) {
   let nowSeeking = false;
   let lastFocus = null;
   let modalFocus = null;
-  let installPrompt = null;
   let outputsLoaded = false;
   let me = null;
   let pendingTimer = 0;
@@ -1080,23 +1079,6 @@ export function createUI(player) {
     }
   }
 
-  let updating = false;
-
-  async function updateApp() {
-    if (updating) return;
-    updating = true;
-    closeUserMenu();
-    showToast("Buscando actualización…");
-    const result = typeof window.spotyUpdate === "function" ? await window.spotyUpdate() : "offline";
-    if (result === "reload") {
-      showToast("Actualizando…");
-      location.reload();
-      return;
-    }
-    updating = false;
-    showToast(result === "current" ? "Ya tienes la última versión" : "No se pudo buscar la actualización");
-  }
-
   async function logout() {
     closeUserMenu();
     try {
@@ -1638,14 +1620,6 @@ export function createUI(player) {
         <div class="set-card">
           <h2>Salida</h2>
           ${outputBlock}
-        </div>
-
-        <div class="set-card">
-          <h2>App</h2>
-          <div class="set-row">
-            <span class="set-text"><strong>Instalar SpotyOFO</strong><small>${window.isSecureContext ? "Ábrela como una app, con su propio ícono." : "Para instalar se necesita HTTPS; en el teléfono puedes usar «Agregar a pantalla de inicio»."}</small></span>
-            <button type="button" class="btn ghost small" data-audio="install" ${installPrompt ? "" : "hidden"}>Instalar</button>
-          </div>
           <div class="set-row">
             <span class="set-text"><strong>Restablecer audio</strong><small>Vuelve a los valores de fábrica. Tus ajustes guardados se conservan.</small></span>
             <button type="button" class="btn ghost small danger-text" data-audio="reset">Restablecer</button>
@@ -1771,7 +1745,6 @@ export function createUI(player) {
       player.resetAudio();
       showToast("Audio restablecido");
     }
-    if (action === "install") await promptInstall();
     if (action === "output-access") {
       try {
         await player.requestOutputAccess();
@@ -1931,28 +1904,6 @@ export function createUI(player) {
       syncSideButtons();
     } else if (document.body.classList.contains("side-open")) closeSide();
     else openSide();
-  }
-
-  // ---------- Instalación (PWA) ----------
-
-  function showInstall(available) {
-    document.getElementById("install-app").hidden = !available;
-    view.querySelectorAll("[data-audio='install']").forEach((button) => {
-      button.hidden = !available;
-    });
-  }
-
-  async function promptInstall() {
-    if (!installPrompt) return;
-    const event = installPrompt;
-    installPrompt = null;
-    event.prompt();
-    try {
-      await event.userChoice;
-    } catch {
-      /* cancelado */
-    }
-    showInstall(false);
   }
 
   // ---------- Atajos ----------
@@ -3009,17 +2960,6 @@ export function createUI(player) {
       syncSideButtons();
     });
     syncSideButtons();
-    window.addEventListener("beforeinstallprompt", (event) => {
-      event.preventDefault();
-      installPrompt = event;
-      showInstall(true);
-    });
-    window.addEventListener("appinstalled", () => {
-      installPrompt = null;
-      showInstall(false);
-      showToast("SpotyOFO instalada");
-    });
-    document.getElementById("install-app").addEventListener("click", () => promptInstall());
     player.on("audio", syncAudioView);
     player.on("notice", (message) => showToast(message));
     player.on("error", (error) => {
@@ -3042,10 +2982,6 @@ export function createUI(player) {
     userBtn.addEventListener("click", () => (userMenu.hidden ? openUserMenu() : closeUserMenu(true)));
     userMenu.addEventListener("keydown", onUserMenuKey);
     userMenu.addEventListener("click", (event) => {
-      if (event.target.closest("#user-update")) {
-        updateApp();
-        return;
-      }
       if (event.target.closest("#user-logout")) {
         logout();
         return;
