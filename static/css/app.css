@@ -375,6 +375,13 @@ img { display: block; max-width: 100%; }
 .card:hover .fab, .card:focus-within .fab { opacity: 1; transform: none; }
 .btn { padding: 12px 18px; background: transparent; }
 .btn.solid { background: var(--aqua); color: var(--aqua-ink); font-weight: 700; }
+.btn.local-pick { position: relative; overflow: hidden; }
+.btn.local-pick input[type="file"] {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  cursor: pointer;
+}
 .btn.ghost { background: rgba(0, 0, 0, 0.28); border: 1px solid rgba(255, 255, 255, 0.16); }
 .btn.shuffle { display: inline-flex; align-items: center; gap: 8px; }
 .btn.shuffle svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }

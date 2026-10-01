@@ -1,4 +1,4 @@
-import { api } from "./api.js?v=20260930f";
+import { api } from "./api.js?v=20260930g";
 
 export const EQ_FREQS = [31, 62, 125, 250, 500, 1000, 2000, 4000, 8000, 16000];
 export const EQ_LABELS = ["31", "62", "125", "250", "500", "1k", "2k", "4k", "8k", "16k"];
@@ -1213,7 +1213,7 @@ export function createPlayer() {
       updatePlaybackState();
       emit("state", snapshot());
     };
-    if (!track || !state.autoplay || track.source === "device") {
+    if (!track || !state.autoplay || track.source === "device" || track.source === "local") {
       stop();
       return;
     }
@@ -1309,7 +1309,7 @@ export function createPlayer() {
   // mezcla lo que falta por sonar junto con lo nuevo, así el orden aleatorio abarca toda la lista.
   function extendQueue(tracks, ctx) {
     if (ctx !== ctxSeq || !tracks || !tracks.length) return 0;
-    const keyOf = (item) => `${item.source === "device" ? "d" : "t"}:${item.id}`;
+    const keyOf = (item) => `${item.source === "device" ? "d" : item.source === "local" ? "l" : "t"}:${item.id}`;
     const have = new Set(state.queue.map(keyOf));
     const fresh = tracks.filter((item) => {
       const key = keyOf(item);

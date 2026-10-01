@@ -1,5 +1,6 @@
-import { api, onSessionExpired, setCsrf } from "./api.js?v=20260930f";
-import { EQ_FREQS, EQ_LABELS, EQ_PRESETS } from "./player.js?v=20260930f";
+import { api, onSessionExpired, setCsrf } from "./api.js?v=20260930g";
+import { EQ_FREQS, EQ_LABELS, EQ_PRESETS } from "./player.js?v=20260930g";
+import { canPickDirectory, grantDirectory, listDirectory, pickDirectory, rememberFiles, rootStatus, setLikedMany } from "./localdisk.js?v=20260930g";
 
 const known = new Map();
 const UPLOAD_EXT = [".mp3", ".m4a", ".mp4", ".aac", ".flac", ".ogg", ".oga", ".opus", ".wav"];
@@ -221,7 +222,13 @@ export function createUI(player) {
   }
 
   function trackKey(track) {
-    return track.source === "device" ? `d:${track.id}` : `t:${track.id}`;
+    if (track.source === "device") return `d:${track.id}`;
+    if (track.source === "local") return `l:${track.id}`;
+    return `t:${track.id}`;
+  }
+
+  function onThisDevice(track) {
+    return track?.source === "device" || track?.source === "local";
   }
 
   function fold(text) {
@@ -327,7 +334,7 @@ export function createUI(player) {
   function trackRow(track, index, options) {
     remember([track]);
     const id = esc(track.id);
-    const device = Boolean(options.device) || track.source === "device";
+    const device = Boolean(options.device) || onThisDevice(track);
     const album = device
       ? `<span class="track-album">${esc(track.album)}</span>`
       : options.album
@@ -350,7 +357,7 @@ export function createUI(player) {
       </div>
       ${album}
       ${like}
-      <span class="time">${fmt(track.duration_ms)}</span>
+      <span class="time">${track.source === "local" && !track.duration_ms ? "—" : fmt(track.duration_ms)}</span>
       <button type="button" class="icon-btn more" data-action="menu" data-id="${id}" data-playlist="${options.playlistId || ""}" aria-label="Más opciones para ${esc(track.title)}" aria-haspopup="menu">···</button>
       ${options.sortable ? `<span class="sort-btns">
         <button type="button" class="icon-btn" data-action="move-up" aria-label="Subir ${esc(track.title)}"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 14 6-6 6 6"/></svg></button>
@@ -992,6 +999,81 @@ export function createUI(player) {
     `;
   }
 
+  function localPick(label, solid = true) {
+    const cls = solid ? "btn solid local-pick" : "btn ghost local-pick";
+    if (canPickDirectory()) {
+      return `<button type="button" class="${cls}" data-action="pick-local">${label}</button>`;
+    }
+    return `<label class="${cls}">${label}<input type="file" webkitdirectory multiple data-action="pick-local-files" aria-label="${esc(label)}"></label>`;
+  }
+
+  function renderLocalGate(status) {
+    if (status.state === "prompt") {
+      return `
+        <header class="sheet" style="--a:#10243a;--b:#2ef2c0">
+          <div>
+            <p class="kicker">Archivo de Equipo</p>
+            <h1>${esc(status.name || "Tu equipo")}</h1>
+            <p class="sheet-sub">Este navegador ya tenía esa carpeta. Vuelve a permitir el acceso para verla. Los archivos se quedan en este equipo y no se suben.</p>
+            <div class="sheet-actions">
+              <button type="button" class="btn solid" data-action="grant-local">Permitir acceso</button>
+              ${localPick("Elegir otra carpeta")}
+            </div>
+          </div>
+        </header>`;
+    }
+    const note = status.state === "unsupported"
+      ? "Elige la carpeta de música de este equipo. Se reproduce aquí y no se sube al servidor. En Chrome o Edge, con HTTPS o en este equipo, la carpeta se recuerda."
+      : "Elige la carpeta de música de este equipo. Se reproduce aquí y no se sube al servidor.";
+    return `
+      <header class="sheet" style="--a:#10243a;--b:#2ef2c0">
+        <div>
+          <p class="kicker">Archivo de Equipo</p>
+          <h1>Tu equipo</h1>
+          <p class="sheet-sub">${note}</p>
+          <div class="sheet-actions">${localPick("Elegir carpeta")}</div>
+        </div>
+      </header>`;
+  }
+
+  async function renderLocalEquipo(rel) {
+    const status = await rootStatus();
+    if (status.state !== "ready") return renderLocalGate(status);
+    let data;
+    try {
+      data = await listDirectory(rel);
+    } catch (error) {
+      if (error?.name === "NotFoundError") {
+        return `<h1 class="hello">Archivo de Equipo</h1><p class="empty">No encuentro esa carpeta.</p><p><a href="#/equipo">Volver a la carpeta principal</a></p>`;
+      }
+      const again = await rootStatus();
+      if (again.state !== "ready") return renderLocalGate(again);
+      return `<h1 class="hello">Archivo de Equipo</h1><p class="empty">No se pudo leer esa carpeta.</p><p><a href="#/equipo">Volver a la carpeta principal</a></p>`;
+    }
+    remember(data.tracks);
+    const crumbs = [`<a href="#/equipo">${esc(data.location.replace(/^Este equipo · /, "") || "Música")}</a>`, ...data.crumbs.map((crumb) => `<a href="${equipoHash(crumb.path)}">${esc(crumb.name)}</a>`)].join(" / ");
+    const summary = `${data.folders.length} carpetas · ${data.tracks.length} pistas en esta carpeta`;
+    return `
+      <div class="crumbs">${crumbs}</div>
+      <header class="sheet" style="--a:#10243a;--b:#2ef2c0">
+        ${coverImg(data.cover_url, { high: true })}
+        <div>
+          <p class="kicker">Archivo de Equipo</p>
+          <h1>${esc(data.name)}</h1>
+          <p class="sheet-sub">${esc(summary)}<br>${esc(data.location)}</p>
+          <div class="sheet-actions">
+            ${data.tracks.length ? `<button type="button" class="btn solid" data-action="play-equipo">Reproducir</button>
+            <button type="button" class="btn ghost heart ${data.liked ? "is-on" : ""}" data-action="like-equipo" data-local="1" aria-pressed="${data.liked ? "true" : "false"}">${data.liked ? "♥" : "♡"} Me gusta</button>` : ""}
+            ${localPick("Cambiar carpeta", false)}
+          </div>
+        </div>
+      </header>
+      ${data.folders.length ? `<div class="folder-grid">${data.folders.map(folderCard).join("")}</div>` : ""}
+      ${data.tracks.length ? `<div class="tracklist">${data.tracks.map((track, index) => trackRow(track, index, { device: true, album: true, context: "equipo", contextId: rel })).join("")}</div>` : ""}
+      ${!data.folders.length && !data.tracks.length ? `<p class="empty">Esta carpeta no tiene música.</p>` : ""}
+    `;
+  }
+
   // ---------- Cuenta y administración ----------
 
   function isAdmin() {
@@ -1335,10 +1417,10 @@ export function createUI(player) {
     if (name === "library") return show(renderLibrary);
     if (name === "uploads") return show(renderUploads);
     if (name === "admin") return isAdmin() ? show(renderAdmin) : show(renderHome);
-    if (name === "equipo" && !isAdmin()) return show(async () => `<h1 class="hello">Archivo de Equipo</h1><p class="empty">La carpeta de música del servidor es solo para el administrador.</p>`);
     if (name === "equipo") {
       const rel = parts().slice(1).map(decodeURIComponent).join("/");
-      return show(() => renderEquipo(rel));
+      if (isAdmin()) return show(() => renderEquipo(rel));
+      return show(() => renderLocalEquipo(rel));
     }
     if (name === "likes") return show(renderLikes);
     if (name === "genres") return show(renderGenres);
@@ -2077,7 +2159,9 @@ export function createUI(player) {
     const remove = menuPlaylistId
       ? `<button type="button" role="menuitem" data-action="remove-from-list" data-id="${id}" data-playlist="${esc(menuPlaylistId)}">Quitar de esta playlist</button>`
       : "";
-    const libraryLinks = track.source === "device"
+    const libraryLinks = track.source === "local"
+      ? `<a role="menuitem" href="${equipoHash(track.folder || "")}">Abrir carpeta</a>`
+      : track.source === "device"
       ? `${item("add-to-playlist", `${ADD_ICON}Agregar a playlist`)}
       ${remove}
       <a role="menuitem" href="${equipoHash(track.folder || "")}">Abrir carpeta</a>`
@@ -2358,6 +2442,10 @@ export function createUI(player) {
 
   function addTrackToPlaylist(track) {
     if (!track) return;
+    if (track.source === "local") {
+      showToast("Esa canción está en tu equipo y se queda ahí. No entra en las listas del servidor.");
+      return;
+    }
     remember([track]);
     return openPicker({
       subtitle: track.artist ? `«${track.title}» · ${track.artist}` : `«${track.title}»`,
@@ -2490,6 +2578,43 @@ export function createUI(player) {
     if (action === "like") {
       event.preventDefault();
       await toggleLike(target.dataset.like);
+      return;
+    }
+    if (action === "pick-local" || action === "grant-local") {
+      target.disabled = true;
+      try {
+        if (action === "grant-local") {
+          const ok = await grantDirectory();
+          if (!ok) {
+            showToast("No se permitió leer la carpeta.");
+            return;
+          }
+        } else {
+          await pickDirectory();
+        }
+        go("#/equipo");
+      } catch (error) {
+        if (error?.name === "AbortError") showToast("No se eligió ninguna carpeta.");
+        else showToast("No se pudo abrir la carpeta de este equipo.");
+      } finally {
+        target.disabled = false;
+      }
+      return;
+    }
+    if (action === "like-equipo" && target.dataset.local === "1") {
+      target.disabled = true;
+      try {
+        const rows = [...view.querySelectorAll(".track")].map((row) => trackFromRow(row)).filter((track) => track?.source === "local");
+        const liked = target.getAttribute("aria-pressed") !== "true";
+        await setLikedMany(rows.map((track) => track.path), liked);
+        rows.forEach((track) => paintSong(track.song_key, liked));
+        paintFolderLike(liked);
+        showToast(liked
+          ? (rows.length === 1 ? "Guardada en Me gusta de este navegador" : `${rows.length} canciones en Me gusta de este navegador`)
+          : (rows.length === 1 ? "Quitada de Me gusta" : "Quitadas de Me gusta"));
+      } finally {
+        target.disabled = false;
+      }
       return;
     }
     if (action === "like-equipo") {
@@ -2689,6 +2814,14 @@ export function createUI(player) {
   async function toggleLike(id) {
     const current = trackFromRow({ dataset: { id: String(id) } }) || known.get(id) || known.get(Number(id));
     const shown = Boolean(current?.liked);
+    if (current?.source === "local") {
+      const liked = !shown;
+      await setLikedMany([current.path], liked);
+      current.liked = liked;
+      paintSong(current.song_key, liked);
+      showToast(liked ? "Guardada en Me gusta de este navegador" : "Quitada de Me gusta");
+      return;
+    }
     if (current?.source === "device") {
       const result = await api.equipoLike(current.id, shown);
       const track = result.tracks?.[0];
@@ -2724,6 +2857,13 @@ export function createUI(player) {
       if (event.target.closest("#genre-fold")) toggleSideGenres();
     });
     view.addEventListener("change", (event) => {
+      if (event.target.matches("[data-action='pick-local-files']")) {
+        const files = event.target.files;
+        if (!files?.length) return;
+        rememberFiles(files);
+        go("#/equipo");
+        return;
+      }
       if (event.target.id !== "genre-sort" || !genreState) return;
       genreState.sort = event.target.value;
       try {
@@ -2872,13 +3012,13 @@ export function createUI(player) {
         openNow();
         return;
       }
-      if (track.source === "device") go(equipoHash(track.folder || ""));
+      if (onThisDevice(track)) go(equipoHash(track.folder || ""));
       else if (track.album_id) go(`#/album/${track.album_id}`);
     });
     document.getElementById("p-artist").addEventListener("click", () => {
       const track = player.current();
       if (!track) return;
-      if (track.source === "device") {
+      if (onThisDevice(track)) {
         const folder = track.folder || "";
         const parent = folder.includes("/") ? folder.slice(0, folder.lastIndexOf("/")) : "";
         go(equipoHash(parent));

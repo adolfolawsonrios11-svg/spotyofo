@@ -295,7 +295,7 @@ if m:
     check("player.js expone extendQueue", b"extendQueue" in body, "")
     st, h, body = admin.raw("GET", f"/static/js/api.js?v={m.group(1)}")
     check("api.js tiene uploadsPage", b"uploadsPage" in body, "")
-    check("ui.js importa módulos con la versión nueva", "?v=20260930f" in js and "?v=20260930e" not in js and "?v=20260930d" not in js, "")
+    check("ui.js importa módulos con la versión nueva", "?v=20260930g" in js and "?v=20260930f" not in js and "?v=20260930e" not in js, "")
     check("el menú muestra la versión y Actualizar", 'id="user-version"' in html and "Versión" in html and 'id="user-update"' in html and ">Actualizar<" in html, "")
     check("el sitio se puede instalar desde el navegador", 'rel="manifest"' in html and "manifest.webmanifest" in html and 'id="user-install"' in html, "")
 
