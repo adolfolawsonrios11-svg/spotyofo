@@ -9,6 +9,7 @@ import secrets
 import subprocess
 import time
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 from functools import wraps
 from pathlib import Path
 from urllib.parse import quote, urlparse
@@ -690,12 +691,21 @@ def playlist_row(row, with_counts=True):
 VISIBLE_PLAYLISTS = "(editorial = 1 OR owner_id = %s)"
 
 
+def chile_now():
+    """Hora de Chile. El servidor puede estar en UTC; el saludo sigue el reloj de Santiago."""
+    try:
+        return datetime.now(ZoneInfo("America/Santiago"))
+    except Exception:
+        return datetime.now().astimezone()
+
+
 def greeting():
-    now = datetime.now().astimezone()
+    now = chile_now()
     hour = now.hour
-    if hour < 12:
+    # 05:00–11:59 mañana, 12:00–18:59 tarde, 19:00–04:59 noche.
+    if 5 <= hour < 12:
         hello = "Buenos días"
-    elif hour < 19:
+    elif 12 <= hour < 19:
         hello = "Buenas tardes"
     else:
         hello = "Buenas noches"
