@@ -39,7 +39,7 @@ STATUS_LABEL = {
 }
 USER_FIELDS = (
     "id, username, display_name, role, status, must_change_password, session_version, "
-    "failed_logins, locked_until, created_at, approved_at, approved_by, last_login_at, is_demo"
+    "failed_logins, locked_until, created_at, approved_at, approved_by, last_login_at, is_demo, can_edit"
 )
 
 
@@ -150,6 +150,8 @@ def public_user(row):
         "last_login_at": _fmt(row.get("last_login_at")),
         "locked": bool(row.get("locked_until")) and _is_future(row.get("locked_until")),
         "demo": bool(row.get("is_demo")),
+        # La demo nunca edita, aunque la columna diga otra cosa.
+        "can_edit": bool(row.get("can_edit")) and not bool(row.get("is_demo")),
     }
 
 
@@ -403,7 +405,7 @@ def _active_admins(cur):
 
 
 def admin_action(conn, actor, target_id, action):
-    """approve | reject | block | unblock | reset-password. Devuelve (usuario, extra)."""
+    """approve | reject | block | unblock | reset-password | grant-edit | revoke-edit. Devuelve (usuario, extra)."""
     target = get_user(conn, target_id)
     if not target:
         raise AccountError("Usuario no encontrado.", 404)
@@ -447,6 +449,19 @@ def admin_action(conn, actor, target_id, action):
             temp = temporary_password()
             set_password(conn, target["id"], temp, must_change=True)
             extra["temporary_password"] = temp
+        elif action == "grant-edit":
+            if target.get("is_demo"):
+                raise AccountError("La cuenta demo no puede tener permiso para editar canciones.", 403)
+            if target["role"] == "admin":
+                raise AccountError("Los administradores ya pueden editar canciones.", 409)
+            if target["status"] != "active":
+                raise AccountError("Solo se da el permiso a cuentas activas.", 409)
+            cur.execute(
+                "UPDATE users SET can_edit = 1 WHERE id = %s AND role = 'user' AND is_demo = 0 AND status = 'active'",
+                (target["id"],),
+            )
+        elif action == "revoke-edit":
+            cur.execute("UPDATE users SET can_edit = 0 WHERE id = %s", (target["id"],))
         else:
             raise AccountError("Acción no válida.", 400)
     return public_user(get_user(conn, target["id"])), extra

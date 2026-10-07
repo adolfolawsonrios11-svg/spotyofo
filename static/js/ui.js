@@ -1,6 +1,6 @@
-import { api, onSessionExpired, setCsrf } from "./api.js?v=20261007a";
-import { EQ_FREQS, EQ_LABELS, EQ_PRESETS } from "./player.js?v=20261007a";
-import { canPickDirectory, grantDirectory, listDirectory, pickDirectory, rememberFiles, rootStatus, setLikedMany } from "./localdisk.js?v=20261007a";
+import { api, onSessionExpired, setCsrf } from "./api.js?v=20261007b";
+import { EQ_FREQS, EQ_LABELS, EQ_PRESETS } from "./player.js?v=20261007b";
+import { canPickDirectory, grantDirectory, listDirectory, pickDirectory, rememberFiles, rootStatus, setLikedMany } from "./localdisk.js?v=20261007b";
 
 const known = new Map();
 const UPLOAD_EXT = [".mp3", ".m4a", ".mp4", ".aac", ".flac", ".ogg", ".oga", ".opus", ".wav"];
@@ -674,7 +674,7 @@ export function createUI(player) {
   const UP_CHUNK = 120; // filas que se pintan por tanda, para no congelar la pantalla
 
   // Subidas: lo cargado hasta ahora, cuántas filas hay pintadas y la carga del resto en segundo plano.
-  const upl = { token: 0, run: 0, tracks: [], total: 0, admin: false, max_mb: 200, rendered: 0, done: true, rest: Promise.resolve(), restError: null };
+  const upl = { token: 0, run: 0, tracks: [], total: 0, admin: false, can_edit: false, max_mb: 200, rendered: 0, done: true, rest: Promise.resolve(), restError: null };
 
   // Sin repetidos (por id), conservando el orden en que llegan.
   function uniqueTracks(list) {
@@ -706,7 +706,7 @@ export function createUI(player) {
       <div class="up-play">
         <button type="button" class="btn solid" data-action="play-uploads"${off} aria-describedby="upload-summary" aria-label="Reproducir todas las canciones subidas${total}">Reproducir todas${total}</button>
         <button type="button" class="btn ghost shuffle" data-action="play-uploads-shuffle"${off} aria-describedby="upload-summary" aria-label="Reproducir las canciones subidas en orden aleatorio">${UP_SHUFFLE_ICON}Aleatorio</button>
-        ${upl.admin && count ? `<button type="button" class="btn ghost edit-many" data-action="select-start" aria-label="Seleccionar varias canciones para editarlas juntas">${EDIT_ICON}Editar varias</button>` : ""}
+        ${upl.can_edit && count ? `<button type="button" class="btn ghost edit-many" data-action="select-start" aria-label="Seleccionar varias canciones para editarlas juntas">${EDIT_ICON}Editar varias</button>` : ""}
       </div>
     </div>`;
   }
@@ -779,6 +779,7 @@ export function createUI(player) {
     upl.tracks = uniqueTracks(first.tracks);
     upl.total = Number(first.total) || upl.tracks.length;
     upl.admin = Boolean(first.admin);
+    upl.can_edit = Boolean(first.can_edit ?? first.admin);
     upl.max_mb = first.max_mb;
     upl.rendered = 0;
     upl.restError = null;
@@ -957,14 +958,19 @@ export function createUI(player) {
           return;
         }
         let saved = track;
-        if (Object.keys(changes).length) {
-          const result = await api.editTrack(track.id, changes);
-          if (result.track) {
-            rememberEdited([result.track]);
-            saved = result.track;
+        try {
+          if (Object.keys(changes).length) {
+            const result = await api.editTrack(track.id, changes);
+            if (result.track) {
+              rememberEdited([result.track]);
+              saved = result.track;
+            }
           }
+          if (hasCover) await api.albumCover(saved.album_id, cover);
+        } catch (error) {
+          await editPermissionLost(error);
+          throw error;
         }
-        if (hasCover) await api.albumCover(saved.album_id, cover);
         closeModal();
         showToast("Canción actualizada");
         await refreshAfterEdit();
@@ -1064,7 +1070,13 @@ export function createUI(player) {
           showToast("Escribe al menos un cambio");
           return;
         }
-        const result = await api.editTracks(ids, changes);
+        let result;
+        try {
+          result = await api.editTracks(ids, changes);
+        } catch (error) {
+          await editPermissionLost(error);
+          throw error;
+        }
         rememberEdited(result.tracks);
         closeModal();
         stopSelect();
@@ -1072,6 +1084,20 @@ export function createUI(player) {
         await refreshAfterEdit();
       },
     });
+  }
+
+  // Si el administrador quitó el permiso mientras la página estaba abierta: refresca la sesión y oculta el editor.
+  async function editPermissionLost(error) {
+    if (error?.status !== 403 || isAdmin()) return;
+    try {
+      me = await api.me();
+    } catch {
+      return;
+    }
+    if (canEdit()) return;
+    closeModal();
+    stopSelect();
+    if (parts()[0] === "uploads") route();
   }
 
   function confirmDelete(track) {
@@ -1276,6 +1302,11 @@ export function createUI(player) {
     return Boolean(me && me.admin);
   }
 
+  // Administradores o cuentas con permiso para editar canciones (el servidor lo vuelve a comprobar en cada petición).
+  function canEdit() {
+    return Boolean(me && (me.admin || me.can_edit));
+  }
+
   function isDemo() {
     return Boolean(me && me.demo);
   }
@@ -1306,7 +1337,7 @@ export function createUI(player) {
     if (!user) return;
     document.getElementById("user-initial").textContent = initial(user.display_name || user.username);
     document.getElementById("user-name").textContent = user.display_name || user.username;
-    document.getElementById("user-menu-head").innerHTML = `<strong>${esc(user.display_name || user.username)}</strong><span>@${esc(user.username)}${isAdmin() ? " · Administrador" : ""}${isDemo() ? " · Cuenta demo" : ""}</span>`;
+    document.getElementById("user-menu-head").innerHTML = `<strong>${esc(user.display_name || user.username)}</strong><span>@${esc(user.username)}${isAdmin() ? " · Administrador" : canEdit() ? " · Editor de canciones" : ""}${isDemo() ? " · Cuenta demo" : ""}</span>`;
     document.querySelectorAll("[data-admin-only]").forEach((el) => {
       el.hidden = !isAdmin();
     });
@@ -1470,6 +1501,9 @@ export function createUI(player) {
     if (user.status === "rejected") list.push(btn("approve", "Aprobar", "solid"));
     if (user.status === "blocked") list.push(btn("unblock", "Desbloquear", "solid"));
     if (!self && !user.demo && (user.status === "active" || user.status === "blocked")) list.push(btn("reset-password", "Restablecer contraseña"));
+    if (!self && user.status === "active" && user.role !== "admin" && !user.demo) {
+      list.push(`<label class="switch-inline perm-edit"><input type="checkbox" class="switch" role="switch" data-perm-edit="${user.id}" data-name="${esc(user.display_name)}" aria-label="Permitir que ${esc(user.display_name)} edite canciones"${user.can_edit ? " checked" : ""}><span>Puede editar canciones</span></label>`);
+    }
     if (!self && user.status === "active") list.push(btn("block", "Bloquear", "ghost danger-text"));
     if (!self) list.push(btn("delete", "Eliminar", "ghost danger-text"));
     if (self) list.push(`<a class="btn small ghost" href="/account/password">Cambiar mi contraseña</a>`);
@@ -1481,6 +1515,7 @@ export function createUI(player) {
       `@${esc(user.username)}`,
       user.role === "admin" ? "Administrador" : "",
       user.demo ? "Cuenta demo (se reinicia cada noche)" : "",
+      user.can_edit && user.role !== "admin" ? "Editor de canciones" : "",
       user.id === selfId ? "Tú" : "",
       `Pidió acceso ${esc(user.created_at || "")}`,
       user.last_login_at ? `Último ingreso ${esc(user.last_login_at)}` : "Sin ingresos",
@@ -1593,6 +1628,28 @@ export function createUI(player) {
       },
     });
     return null;
+  }
+
+  async function togglePermEdit(input) {
+    const id = input.dataset.permEdit;
+    const name = input.dataset.name || "";
+    const grant = input.checked;
+    input.disabled = true;
+    try {
+      await api.adminAction(id, grant ? "grant-edit" : "revoke-edit");
+      showToast(grant ? `«${name}» ahora puede editar canciones` : `«${name}» ya no puede editar canciones`);
+      if (parts()[0] === "admin") {
+        const scroll = view.scrollTop;
+        view.innerHTML = await renderAdmin();
+        view.scrollTop = scroll;
+        view.querySelector(`[data-perm-edit="${CSS.escape(id)}"]`)?.focus();
+      }
+    } catch (error) {
+      input.checked = !grant;
+      showToast(error.message);
+    } finally {
+      input.disabled = false;
+    }
   }
 
   async function route() {
@@ -2367,9 +2424,9 @@ export function createUI(player) {
       <a role="menuitem" href="${equipoHash(track.folder || "")}">Abrir carpeta</a>`
       : `${item("add-to-playlist", `${ADD_ICON}Agregar a playlist`)}
       ${remove}
-      ${track.source === "user" && isAdmin() ? `${item("edit-track", `${EDIT_ICON}Editar canción`)}
-      ${item("select-many", "Seleccionar varias")}
-      ${item("delete-upload", "Eliminar archivo")}` : ""}
+      ${track.source === "user" && canEdit() ? `${item("edit-track", `${EDIT_ICON}Editar canción`)}
+      ${item("select-many", "Seleccionar varias")}` : ""}
+      ${track.source === "user" && isAdmin() ? item("delete-upload", "Eliminar archivo") : ""}
       <a role="menuitem" href="#/album/${track.album_id}">Ir al álbum</a>
       <a role="menuitem" href="#/artist/${track.artist_id}">Ir al artista</a>`;
     menu.innerHTML = `
@@ -2785,7 +2842,7 @@ export function createUI(player) {
       await playFromRow(target);
       return;
     }
-    if (action === "select-start" && isAdmin()) {
+    if (action === "select-start" && canEdit()) {
       startSelect(null);
       return;
     }
@@ -3151,14 +3208,18 @@ export function createUI(player) {
         }]);
       }
       if (action === "delete-upload" && isAdmin()) confirmDelete(track);
-      if (action === "edit-track" && isAdmin()) await editTrackForm(track);
-      if (action === "select-many" && isAdmin()) startSelect(track);
+      if (action === "edit-track" && canEdit()) await editTrackForm(track);
+      if (action === "select-many" && canEdit()) startSelect(track);
     });
     view.addEventListener("change", (event) => {
       if (event.target.id !== "upload-input") return;
       const files = [...event.target.files];
       event.target.value = "";
       if (files.length) uploadFiles(files).catch((error) => showToast(error.message));
+    });
+    view.addEventListener("change", (event) => {
+      const input = event.target.closest?.("[data-perm-edit]");
+      if (input && isAdmin()) togglePermEdit(input);
     });
     window.addEventListener("beforeunload", (event) => {
       if (!uploading) return;

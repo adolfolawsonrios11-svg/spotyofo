@@ -255,6 +255,20 @@ def is_admin():
     return bool(g.get("user")) and g.user["role"] == "admin" and not is_demo()
 
 
+def can_edit_tracks():
+    """Administradores y cuentas con permiso de edición (users.can_edit). Nunca la demo.
+
+    g.user se lee de la base en cada petición (load_user), así que quitar el permiso corta el acceso al instante.
+    """
+    if is_admin():
+        return True
+    return bool(g.get("user")) and bool(g.user.get("can_edit")) and not is_demo() and g.user.get("status") == "active"
+
+
+def actor_label():
+    return f"{'Admin' if is_admin() else 'Editor'} {g.user['username']} (id {g.user['id']})"
+
+
 DEMO_FORBIDDEN = "La cuenta demo no puede hacer esto."
 DEMO_LOGIN_PER_IP = 30
 DEMO_LOGIN_WINDOW = 15 * 60
@@ -411,6 +425,17 @@ def require_admin(view):
     def wrapper(*args, **kwargs):
         if not is_admin():
             return fail("Solo el administrador puede hacer esto.", 403)
+        return view(*args, **kwargs)
+
+    return wrapper
+
+
+def require_editor(view):
+    """Administradores o cuentas con permiso para editar canciones."""
+    @wraps(view)
+    def wrapper(*args, **kwargs):
+        if not can_edit_tracks():
+            return fail("No tienes permiso para editar canciones. Pídeselo al administrador.", 403)
         return view(*args, **kwargs)
 
     return wrapper
@@ -610,6 +635,7 @@ def me():
         "csrf": csrf_token(),
         "admin": is_admin(),
         "demo": is_demo(),
+        "can_edit": can_edit_tracks(),
     }
     if is_admin():
         data["pending"] = accounts.pending_count(get_db())
@@ -628,7 +654,7 @@ def admin_users():
 @app.post("/api/admin/users/<int:user_id>/<action>")
 @require_admin
 def admin_user_action(user_id, action):
-    if action not in ("approve", "reject", "block", "unblock", "reset-password"):
+    if action not in ("approve", "reject", "block", "unblock", "reset-password", "grant-edit", "revoke-edit"):
         return fail("Acción no válida.", 404)
     db = get_db()
     try:
@@ -636,6 +662,11 @@ def admin_user_action(user_id, action):
     except accounts.AccountError as exc:
         return fail(exc.message, exc.code)
     log.info("Admin %s: %s -> usuario %s", g.user["username"], action, user_id)
+    if action in ("grant-edit", "revoke-edit"):
+        log.info(
+            "Permiso de edición: admin %s (id %s) lo %s a %s (id %s)",
+            g.user["username"], g.user["id"], "dio" if action == "grant-edit" else "quitó", user["username"], user_id,
+        )
     return jsonify(user=user, pending=accounts.pending_count(db), **extra)
 
 
@@ -1367,6 +1398,7 @@ def list_uploads():
         tracks = [{key: track.get(key) for key in LITE_TRACK_FIELDS} for track in tracks]
     return jsonify(
         admin=is_admin(),
+        can_edit=can_edit_tracks(),
         max_mb=uploads.MAX_FILE_BYTES // (1024 * 1024),
         total=total,
         offset=offset,
@@ -1399,7 +1431,7 @@ def delete_track(track_id):
     return jsonify(ok=True)
 
 
-# ---------- edición de canciones: solo administradores (cambia la base de datos, no los archivos) ----------
+# ---------- edición de canciones: administradores y cuentas con permiso (cambia la base de datos, no los archivos) ----------
 
 EDIT_PER_WINDOW = 60
 EDIT_WINDOW = 60
@@ -1418,7 +1450,7 @@ def describe_changes(changes):
 
 
 @app.patch("/api/tracks/batch")
-@require_admin
+@require_editor
 def edit_tracks_batch():
     if edit_rate_limited():
         return fail(ERROR_TEXT[429], 429)
@@ -1431,14 +1463,14 @@ def edit_tracks_batch():
         summary = trackedit.edit_tracks(get_db(), ids, changes)
     except trackedit.EditError as exc:
         return fail(exc.message, exc.code, field=exc.field)
-    log.info("Admin %s editó %s canciones (%s): %s", g.user["username"], len(ids), ",".join(map(str, ids[:20])) + ("..." if len(ids) > 20 else ""), describe_changes(changes))
+    log.info("%s editó %s canciones (%s): %s", actor_label(), len(ids), ",".join(map(str, ids[:20])) + ("..." if len(ids) > 20 else ""), describe_changes(changes))
     marks = ", ".join(["%s"] * len(ids))
     tracks = tracks_where(f"WHERE t.id IN ({marks})", tuple(ids))
     return jsonify(ok=True, summary=summary, tracks=tracks)
 
 
 @app.patch("/api/tracks/<int:track_id>")
-@require_admin
+@require_editor
 def edit_track(track_id):
     if edit_rate_limited():
         return fail(ERROR_TEXT[429], 429)
@@ -1448,13 +1480,13 @@ def edit_track(track_id):
         summary = trackedit.edit_tracks(get_db(), [track_id], changes)
     except trackedit.EditError as exc:
         return fail(exc.message, exc.code, field=exc.field)
-    log.info("Admin %s editó la canción %s: %s", g.user["username"], track_id, describe_changes(changes))
+    log.info("%s editó la canción %s: %s", actor_label(), track_id, describe_changes(changes))
     found = tracks_where("WHERE t.id = %s", (track_id,))
     return jsonify(ok=True, summary=summary, track=found[0] if found else None)
 
 
 @app.post("/api/albums/<int:album_id>/cover")
-@require_admin
+@require_editor
 def edit_album_cover(album_id):
     if edit_rate_limited():
         return fail(ERROR_TEXT[429], 429)
@@ -1462,7 +1494,7 @@ def edit_album_cover(album_id):
         cover = trackedit.set_album_cover(get_db(), album_id, request.files.get("file"))
     except trackedit.EditError as exc:
         return fail(exc.message, exc.code)
-    log.info("Admin %s cambió la portada del álbum %s", g.user["username"], album_id)
+    log.info("%s cambió la portada del álbum %s", actor_label(), album_id)
     return jsonify(ok=True, cover_url=f"/static/covers/{cover}")
 
 

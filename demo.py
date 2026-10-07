@@ -81,7 +81,7 @@ def ensure_user(conn, password):
         cur.execute(
             """
             UPDATE users
-            SET status = 'active', must_change_password = 0, failed_logins = 0, locked_until = NULL,
+            SET status = 'active', must_change_password = 0, failed_logins = 0, locked_until = NULL, can_edit = 0,
                 display_name = %s, approved_at = COALESCE(approved_at, NOW())
             WHERE id = %s AND is_demo = 1 AND role = 'user'
             """,

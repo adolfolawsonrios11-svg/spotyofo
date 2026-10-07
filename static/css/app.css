@@ -1832,3 +1832,14 @@ body.selecting .view::after { content: ""; display: block; height: 96px; } /* qu
   .select-bar .btn { padding-left: 12px; padding-right: 12px; }
   .select-count { font-size: 14px; }
 }
+
+/* ---------- Permiso para editar canciones (Cuentas) ---------- */
+.user-actions .perm-edit { min-height: 40px; padding: 0 12px 0 6px; border-radius: 999px; border: 1px solid var(--line); color: var(--text); font-size: 14px; font-weight: 600; }
+.user-actions .perm-edit:has(.switch:checked) { border-color: rgba(46, 242, 192, 0.5); background: rgba(46, 242, 192, 0.08); }
+.user-actions .perm-edit:has(.switch:focus-visible) { outline: 2px solid var(--aqua); outline-offset: 2px; }
+@media (pointer: coarse) {
+  .user-actions .perm-edit { min-height: 44px; }
+}
+@media (max-width: 700px) {
+  .user-actions .perm-edit { flex: 1 1 100%; justify-content: space-between; flex-direction: row-reverse; padding: 0 8px 0 14px; }
+}

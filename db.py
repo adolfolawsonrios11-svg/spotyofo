@@ -135,6 +135,7 @@ CREATE TABLE IF NOT EXISTS users (
   approved_by INT NULL,
   last_login_at DATETIME NULL,
   is_demo TINYINT(1) NOT NULL DEFAULT 0,
+  can_edit TINYINT(1) NOT NULL DEFAULT 0,
   UNIQUE KEY uq_users_username (username),
   KEY idx_users_status (status)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
@@ -205,6 +206,8 @@ MIGRATION_COLUMNS = [
     ("play_history", "user_id", "ALTER TABLE play_history ADD COLUMN user_id INT NULL DEFAULT NULL"),
     # Cuenta demo del portafolio: restringida y reiniciada cada noche (ver demo.py).
     ("users", "is_demo", "ALTER TABLE users ADD COLUMN is_demo TINYINT(1) NOT NULL DEFAULT 0"),
+    # Permiso para editar canciones subidas sin ser administrador (solo lo da o quita un administrador).
+    ("users", "can_edit", "ALTER TABLE users ADD COLUMN can_edit TINYINT(1) NOT NULL DEFAULT 0"),
 ]
 MIGRATION_INDEXES = [
     ("tracks", "uq_tracks_hash", "ALTER TABLE tracks ADD UNIQUE KEY uq_tracks_hash (file_hash)"),
