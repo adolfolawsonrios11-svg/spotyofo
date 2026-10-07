@@ -1,6 +1,6 @@
-import { api, onSessionExpired, setCsrf } from "./api.js?v=20260930g";
-import { EQ_FREQS, EQ_LABELS, EQ_PRESETS } from "./player.js?v=20260930g";
-import { canPickDirectory, grantDirectory, listDirectory, pickDirectory, rememberFiles, rootStatus, setLikedMany } from "./localdisk.js?v=20260930g";
+import { api, onSessionExpired, setCsrf } from "./api.js?v=20261006b";
+import { EQ_FREQS, EQ_LABELS, EQ_PRESETS } from "./player.js?v=20261006b";
+import { canPickDirectory, grantDirectory, listDirectory, pickDirectory, rememberFiles, rootStatus, setLikedMany } from "./localdisk.js?v=20261006b";
 
 const known = new Map();
 const UPLOAD_EXT = [".mp3", ".m4a", ".mp4", ".aac", ".flac", ".ogg", ".oga", ".opus", ".wav"];
@@ -845,8 +845,8 @@ export function createUI(player) {
 
   async function renderUploads() {
     await loadUploads();
-    const data = { admin: upl.admin, max_mb: upl.max_mb };
-    const panel = data.admin
+    const data = { admin: upl.admin, max_mb: upl.max_mb, upload: !isDemo() };
+    const panel = data.upload
       ? `<div class="upload-panel">
         <label class="upload-drop" for="upload-input">
           <input type="file" id="upload-input" multiple accept="${UPLOAD_ACCEPT}">
@@ -856,15 +856,15 @@ export function createUI(player) {
         <div id="upload-queue" class="upload-queue"></div>
       </div>`
       : `<div class="auth-card">
-        <strong>Solo el administrador sube canciones</strong>
-        <p>Las canciones subidas son para todos: puedes escucharlas, darles Me gusta y agregarlas a tus listas.</p>
+        <strong>La cuenta demo no sube canciones</strong>
+        <p>Puedes escuchar lo que ya está en el catálogo. Para subir tu música, entra con tu cuenta.</p>
       </div>`;
     setTimeout(syncUploadRows, 0);
     return `
-      <h1 class="hello">${data.admin ? "Subir música" : "Canciones subidas"}</h1>
-      <p class="lead">${data.admin ? "Sube archivos desde el teléfono o este equipo. Se leen título, artista, álbum, número de pista, duración y portada." : "Música que el administrador agregó al catálogo compartido."}</p>
+      <h1 class="hello">${data.upload ? "Subir música" : "Canciones subidas"}</h1>
+      <p class="lead">${data.upload ? "Sube la música que quieras desde el teléfono o este equipo. Se leen título, artista, álbum, número de pista, duración y portada, y queda en el catálogo para todos." : "Música del catálogo compartido. La cuenta demo no puede agregar archivos."}</p>
       ${panel}
-      <section class="block"><div class="block-head"><h2>${data.admin ? "Archivos subidos" : "Canciones"}</h2></div><div id="upload-list">${uploadListHtml()}</div></section>
+      <section class="block"><div class="block-head"><h2>${data.upload ? "Archivos subidos" : "Canciones"}</h2></div><div id="upload-list">${uploadListHtml()}</div></section>
     `;
   }
 
@@ -1114,6 +1114,8 @@ export function createUI(player) {
     document.querySelectorAll("[data-admin-only]").forEach((el) => {
       el.hidden = !isAdmin();
     });
+    const uploadsNav = document.querySelector("[data-nav='uploads']");
+    if (uploadsNav) uploadsNav.hidden = false;
     document.body.classList.toggle("is-admin", isAdmin());
     // Cuenta demo: aviso visible y sin «Cambiar contraseña» (el servidor también lo rechaza).
     document.body.classList.toggle("is-demo", isDemo());

@@ -1374,8 +1374,9 @@ def list_uploads():
 
 
 @app.post("/api/uploads")
-@require_admin
 def upload_track():
+    if is_demo():
+        return fail(DEMO_FORBIDDEN, 403)
     storage = request.files.get("file")
     if storage is None or not storage.filename:
         return fail("Falta el archivo.")

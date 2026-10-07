@@ -254,7 +254,7 @@ for method, path, body in [
     st, data, _ = a.api(method, path, body)
     check(f"usuaria normal {method} {path} -> 403", st == 403, (st, data))
 st, h, raw = a.raw("POST", "/api/uploads", b"--x--", {"X-Requested-With": "SpotyOFO", "X-CSRF-Token": a.csrf, "Content-Type": "multipart/form-data; boundary=x"})
-check("usuaria normal no sube (403)", st == 403, st)
+check("usuaria normal puede intentar subir (no 403)", st == 400, st)
 st, data, _ = a.api("POST", f"/api/playlists/{ana_list}/tracks", {"keys": ["d:Musica/x.mp3"]})
 check("archivos del servidor solo admin (403)", st == 403, (st, data))
 

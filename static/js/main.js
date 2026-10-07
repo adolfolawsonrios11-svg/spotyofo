@@ -1,5 +1,5 @@
-import { createPlayer } from "./player.js?v=20260930g";
-import { createUI } from "./ui.js?v=20260930g";
+import { createPlayer } from "./player.js?v=20261006b";
+import { createUI } from "./ui.js?v=20261006b";
 
 const player = createPlayer();
 const ui = createUI(player);

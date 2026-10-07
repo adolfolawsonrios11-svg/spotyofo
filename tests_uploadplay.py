@@ -148,7 +148,7 @@ check("normal: GET /api/uploads 200 y admin=false", st == 200 and upu.get("admin
 check("normal: ve las mismas canciones que el admin", set(ids(upu)) == set(ids(up)), (len(ids(upu)), len(ids(up))))
 check("normal: sin ids repetidos", len(set(ids(upu))) == len(upu.get("tracks", [])), "")
 st, _ = u.api("POST", "/api/uploads", headers={"Content-Type": "multipart/form-data; boundary=x"}, data=b"--x--")
-check("normal: subir -> 403", st == 403, st)
+check("normal: puede intentar subir (no 403)", st == 400, st)
 st, _ = u.api("DELETE", f"/api/tracks/{first['id']}")
 check("normal: eliminar -> 403", st == 403, st)
 u.api("POST", f"/api/likes/{first['id']}", {"shown_liked": False})
@@ -295,7 +295,7 @@ if m:
     check("player.js expone extendQueue", b"extendQueue" in body, "")
     st, h, body = admin.raw("GET", f"/static/js/api.js?v={m.group(1)}")
     check("api.js tiene uploadsPage", b"uploadsPage" in body, "")
-    check("ui.js importa módulos con la versión nueva", "?v=20260930g" in js and "?v=20260930f" not in js and "?v=20260930e" not in js, "")
+    check("ui.js importa módulos con la versión nueva", "?v=20261006b" in js and "?v=20261006a" not in js and "?v=20260930g" not in js, "")
     check("el menú muestra la versión y Actualizar", 'id="user-version"' in html and "Versión" in html and 'id="user-update"' in html and ">Actualizar<" in html, "")
     check("el sitio se puede instalar desde el navegador", 'rel="manifest"' in html and "manifest.webmanifest" in html and 'id="user-install"' in html, "")
 
