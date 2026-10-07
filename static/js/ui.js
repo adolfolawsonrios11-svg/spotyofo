@@ -1,6 +1,6 @@
-import { api, onSessionExpired, setCsrf } from "./api.js?v=20261006b";
-import { EQ_FREQS, EQ_LABELS, EQ_PRESETS } from "./player.js?v=20261006b";
-import { canPickDirectory, grantDirectory, listDirectory, pickDirectory, rememberFiles, rootStatus, setLikedMany } from "./localdisk.js?v=20261006b";
+import { api, onSessionExpired, setCsrf } from "./api.js?v=20261007a";
+import { EQ_FREQS, EQ_LABELS, EQ_PRESETS } from "./player.js?v=20261007a";
+import { canPickDirectory, grantDirectory, listDirectory, pickDirectory, rememberFiles, rootStatus, setLikedMany } from "./localdisk.js?v=20261007a";
 
 const known = new Map();
 const UPLOAD_EXT = [".mp3", ".m4a", ".mp4", ".aac", ".flac", ".ogg", ".oga", ".opus", ".wav"];
@@ -706,6 +706,7 @@ export function createUI(player) {
       <div class="up-play">
         <button type="button" class="btn solid" data-action="play-uploads"${off} aria-describedby="upload-summary" aria-label="Reproducir todas las canciones subidas${total}">Reproducir todas${total}</button>
         <button type="button" class="btn ghost shuffle" data-action="play-uploads-shuffle"${off} aria-describedby="upload-summary" aria-label="Reproducir las canciones subidas en orden aleatorio">${UP_SHUFFLE_ICON}Aleatorio</button>
+        ${upl.admin && count ? `<button type="button" class="btn ghost edit-many" data-action="select-start" aria-label="Seleccionar varias canciones para editarlas juntas">${EDIT_ICON}Editar varias</button>` : ""}
       </div>
     </div>`;
   }
@@ -876,6 +877,201 @@ export function createUI(player) {
     box.innerHTML = uploadListHtml();
     markPlaying();
     syncUploadRows();
+  }
+
+  // ---------- Editor de canciones (solo administradores; cambia la base de datos, no los archivos) ----------
+
+  const EDIT_ICON = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20h4L19 9l-4-4L4 16v4z"/><path d="m13.5 6.5 4 4"/></svg>`;
+  const selection = { on: false, keep: false, ids: new Set() };
+
+  async function genreOptions() {
+    try {
+      const data = await api.genres();
+      return (data.genres || []).filter((item) => item.slug !== "sin-genero").map((item) => `<option value="${esc(item.name)}"></option>`).join("");
+    } catch {
+      return "";
+    }
+  }
+
+  function yearMax() {
+    return new Date().getFullYear() + 1;
+  }
+
+  // Refresca la vista actual y la barra lateral (los géneros pueden cambiar).
+  async function refreshAfterEdit() {
+    selection.keep = true;
+    try {
+      if (parts()[0] === "uploads") await refreshUploadList();
+      else await route();
+    } finally {
+      selection.keep = false;
+    }
+    paintSide().catch(() => {});
+  }
+
+  function rememberEdited(list) {
+    for (const fresh of list || []) {
+      const old = known.get(fresh.id);
+      if (old) Object.assign(old, fresh);
+    }
+    remember(list || []);
+  }
+
+  async function editTrackForm(track) {
+    const options = await genreOptions();
+    openModal({
+      title: "Editar canción",
+      confirm: "Guardar",
+      body: `<div class="edit-form">
+        <p class="fine edit-note">Cambia los datos en SpotyOFO. El archivo de audio no se modifica.</p>
+        <label>Título<input name="title" maxlength="160" required value="${esc(track.title)}"></label>
+        <label>Artista<input name="artist" maxlength="120" required value="${esc(track.artist)}"></label>
+        <label>Álbum<input name="album" maxlength="160" required value="${esc(track.album)}"></label>
+        <div class="edit-row">
+          <label>Año<input name="year" type="number" inputmode="numeric" min="1000" max="${yearMax()}" placeholder="Sin año" value="${track.year ? esc(track.year) : ""}"></label>
+          <label>N.º de pista<input name="track_number" type="number" inputmode="numeric" min="0" max="9999" value="${esc(track.track_number ?? "")}"></label>
+        </div>
+        <label>Género<input name="genre" maxlength="80" list="edit-genres" placeholder="Sin género" value="${esc(track.genre === "Sin género" ? "" : track.genre || "")}"></label>
+        <datalist id="edit-genres">${options}</datalist>
+        <label>Portada del álbum (opcional)<input name="cover" type="file" accept="image/jpeg,image/png,image/webp"></label>
+        <p class="fine">El año y la portada son del álbum: se aplican a todas sus canciones.</p>
+      </div>`,
+      onSubmit: async (form) => {
+        const data = new FormData(form);
+        const changes = {};
+        const text = (name) => String(data.get(name) || "").trim();
+        if (text("title") !== track.title) changes.title = text("title");
+        if (text("artist") !== track.artist) changes.artist = text("artist");
+        if (text("album") !== track.album) changes.album = text("album");
+        const year = text("year") ? Number(text("year")) : 0;
+        if (year !== Number(track.year || 0)) changes.year = year;
+        const number = text("track_number") ? Number(text("track_number")) : 0;
+        if (number !== Number(track.track_number || 0)) changes.track_number = number;
+        const genre = text("genre") || "Sin género";
+        if (genre !== (track.genre || "Sin género")) changes.genre = genre;
+        const cover = data.get("cover");
+        const hasCover = cover && typeof cover === "object" && cover.size > 0;
+        if (!Object.keys(changes).length && !hasCover) {
+          closeModal();
+          showToast("Sin cambios");
+          return;
+        }
+        let saved = track;
+        if (Object.keys(changes).length) {
+          const result = await api.editTrack(track.id, changes);
+          if (result.track) {
+            rememberEdited([result.track]);
+            saved = result.track;
+          }
+        }
+        if (hasCover) await api.albumCover(saved.album_id, cover);
+        closeModal();
+        showToast("Canción actualizada");
+        await refreshAfterEdit();
+      },
+    });
+  }
+
+  function selectedCount() {
+    return selection.ids.size;
+  }
+
+  function paintSelection() {
+    view.querySelectorAll(".track").forEach((row) => {
+      const track = trackFromRow(row);
+      const can = Boolean(track && track.source === "user");
+      row.classList.toggle("is-selected", can && selection.ids.has(track.id));
+      row.classList.toggle("no-select", !can);
+      row.setAttribute("aria-selected", can && selection.ids.has(track.id) ? "true" : "false");
+    });
+    const n = selectedCount();
+    const label = document.getElementById("select-count");
+    if (label) label.textContent = `${n} ${n === 1 ? "seleccionada" : "seleccionadas"}`;
+    const edit = document.querySelector("#select-bar [data-sel='edit']");
+    if (edit) edit.disabled = !n;
+  }
+
+  function startSelect(track) {
+    selection.on = true;
+    selection.ids = new Set(track && track.source === "user" ? [track.id] : []);
+    document.body.classList.add("selecting");
+    document.getElementById("select-bar").hidden = false;
+    paintSelection();
+    showToast("Toca las canciones que quieres editar juntas");
+  }
+
+  function stopSelect() {
+    selection.on = false;
+    selection.ids.clear();
+    document.body.classList.remove("selecting");
+    const bar = document.getElementById("select-bar");
+    if (bar) bar.hidden = true;
+    view.querySelectorAll(".track.is-selected, .track.no-select").forEach((row) => {
+      row.classList.remove("is-selected", "no-select");
+      row.removeAttribute("aria-selected");
+    });
+  }
+
+  function toggleSelected(row) {
+    const track = trackFromRow(row);
+    if (!track || track.source !== "user") {
+      showToast("Solo se editan canciones subidas");
+      return;
+    }
+    if (selection.ids.has(track.id)) selection.ids.delete(track.id);
+    else selection.ids.add(track.id);
+    paintSelection();
+  }
+
+  function selectAllVisible() {
+    view.querySelectorAll(".track").forEach((row) => {
+      const track = trackFromRow(row);
+      if (track && track.source === "user") selection.ids.add(track.id);
+    });
+    paintSelection();
+  }
+
+  async function editSelectedForm() {
+    const ids = [...selection.ids];
+    if (!ids.length) {
+      showToast("Elige al menos una canción");
+      return;
+    }
+    const options = await genreOptions();
+    openModal({
+      title: `Editar ${ids.length} ${ids.length === 1 ? "canción" : "canciones"}`,
+      confirm: "Aplicar",
+      body: `<div class="edit-form">
+        <p class="fine edit-note">Solo se cambia lo que escribas; lo vacío queda como está. El audio no se modifica.</p>
+        <label>Artista<input name="artist" maxlength="120" placeholder="Sin cambios"></label>
+        <label>Álbum<input name="album" maxlength="160" placeholder="Sin cambios"></label>
+        <div class="edit-row">
+          <label>Año<input name="year" type="number" inputmode="numeric" min="1000" max="${yearMax()}" placeholder="Sin cambios"></label>
+          <label>Género<input name="genre" maxlength="80" list="edit-genres-batch" placeholder="Sin cambios"></label>
+        </div>
+        <datalist id="edit-genres-batch">${options}</datalist>
+      </div>`,
+      onSubmit: async (form) => {
+        const data = new FormData(form);
+        const changes = {};
+        for (const name of ["artist", "album", "genre"]) {
+          const value = String(data.get(name) || "").trim();
+          if (value) changes[name] = value;
+        }
+        const year = String(data.get("year") || "").trim();
+        if (year) changes.year = Number(year);
+        if (!Object.keys(changes).length) {
+          showToast("Escribe al menos un cambio");
+          return;
+        }
+        const result = await api.editTracks(ids, changes);
+        rememberEdited(result.tracks);
+        closeModal();
+        stopSelect();
+        showToast(`${result.summary?.updated ?? ids.length} ${ids.length === 1 ? "canción actualizada" : "canciones actualizadas"}`);
+        await refreshAfterEdit();
+      },
+    });
   }
 
   function confirmDelete(track) {
@@ -1400,6 +1596,7 @@ export function createUI(player) {
   }
 
   async function route() {
+    if (selection.on && !selection.keep) stopSelect();
     if (orderTimer) flushOrder();
     closePicker();
     const [name, arg] = parts();
@@ -2062,6 +2259,7 @@ export function createUI(player) {
       else if (!now.hidden) closeNow();
       else if (document.body.classList.contains("side-open")) closeSide();
       else if (!drawer.hidden) openDrawer(drawerMode);
+      else if (selection.on) stopSelect();
       return;
     }
     if (!now.hidden) trapFocus(event, now);
@@ -2169,7 +2367,9 @@ export function createUI(player) {
       <a role="menuitem" href="${equipoHash(track.folder || "")}">Abrir carpeta</a>`
       : `${item("add-to-playlist", `${ADD_ICON}Agregar a playlist`)}
       ${remove}
-      ${track.source === "user" && isAdmin() ? item("delete-upload", "Eliminar archivo") : ""}
+      ${track.source === "user" && isAdmin() ? `${item("edit-track", `${EDIT_ICON}Editar canción`)}
+      ${item("select-many", "Seleccionar varias")}
+      ${item("delete-upload", "Eliminar archivo")}` : ""}
       <a role="menuitem" href="#/album/${track.album_id}">Ir al álbum</a>
       <a role="menuitem" href="#/artist/${track.artist_id}">Ir al artista</a>`;
     menu.innerHTML = `
@@ -2569,12 +2769,24 @@ export function createUI(player) {
   }
 
   async function onViewClick(event) {
+    if (selection.on) {
+      const row = event.target.closest(".track");
+      if (row && view.contains(row)) {
+        event.preventDefault();
+        toggleSelected(row);
+        return;
+      }
+    }
     const target = event.target.closest("[data-action]");
     if (!target || !view.contains(target)) return;
     const action = target.dataset.action;
     if (action === "play-track") {
       event.preventDefault();
       await playFromRow(target);
+      return;
+    }
+    if (action === "select-start" && isAdmin()) {
+      startSelect(null);
       return;
     }
     if (action === "like") {
@@ -2839,6 +3051,19 @@ export function createUI(player) {
   }
 
   function boot() {
+    document.body.insertAdjacentHTML("beforeend", `<div class="select-bar" id="select-bar" role="toolbar" aria-label="Canciones seleccionadas" hidden>
+      <span class="select-count" id="select-count" aria-live="polite">0 seleccionadas</span>
+      <button type="button" class="btn ghost" data-sel="all">Todas</button>
+      <button type="button" class="btn solid" data-sel="edit">${EDIT_ICON}Editar</button>
+      <button type="button" class="btn ghost" data-sel="cancel">Listo</button>
+    </div>`);
+    document.getElementById("select-bar").addEventListener("click", (event) => {
+      const button = event.target.closest("[data-sel]");
+      if (!button) return;
+      if (button.dataset.sel === "all") selectAllVisible();
+      if (button.dataset.sel === "cancel") stopSelect();
+      if (button.dataset.sel === "edit") editSelectedForm().catch((error) => showToast(error.message));
+    });
     document.getElementById("go-back").addEventListener("click", () => history.back());
     document.getElementById("go-forward").addEventListener("click", () => history.forward());
     document.getElementById("new-playlist").addEventListener("click", () => playlistForm(null));
@@ -2926,6 +3151,8 @@ export function createUI(player) {
         }]);
       }
       if (action === "delete-upload" && isAdmin()) confirmDelete(track);
+      if (action === "edit-track" && isAdmin()) await editTrackForm(track);
+      if (action === "select-many" && isAdmin()) startSelect(track);
     });
     view.addEventListener("change", (event) => {
       if (event.target.id !== "upload-input") return;

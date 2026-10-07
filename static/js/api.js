@@ -81,6 +81,27 @@ function uploadFile(file, onProgress) {
   });
 }
 
+// Portada de álbum (multipart): sin «Content-Type» propio, el navegador pone el límite del formulario.
+async function uploadCover(albumId, file) {
+  const form = new FormData();
+  form.append("file", file, file.name);
+  const response = await fetch(`/api/albums/${albumId}/cover`, {
+    method: "POST",
+    credentials: "same-origin",
+    headers: { Accept: "application/json", "X-Requested-With": "SpotyOFO", ...(csrf ? { "X-CSRF-Token": csrf } : {}) },
+    body: form,
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    sessionEnded(response.status, data);
+    const error = new Error(data.error || "No se pudo cambiar la portada");
+    error.status = response.status;
+    error.data = data;
+    throw error;
+  }
+  return data;
+}
+
 export const api = {
   home: () => request("/api/home"),
   playlists: () => request("/api/playlists"),
@@ -117,4 +138,8 @@ export const api = {
   uploadsPage: (offset = 0, limit = 0) => request(`/api/uploads?lite=1&offset=${offset}${limit ? `&limit=${limit}` : ""}`),
   upload: uploadFile,
   deleteTrack: (id) => request(`/api/tracks/${id}`, { method: "DELETE" }),
+  // Edición de canciones (solo administradores).
+  editTrack: (id, changes) => request(`/api/tracks/${id}`, { method: "PATCH", body: JSON.stringify(changes) }),
+  editTracks: (ids, changes) => request("/api/tracks/batch", { method: "PATCH", body: JSON.stringify({ ids, changes }) }),
+  albumCover: uploadCover,
 };

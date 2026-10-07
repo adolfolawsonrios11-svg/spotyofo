@@ -1796,3 +1796,39 @@ a.genre small { font-family: var(--sans); font-size: 13px; letter-spacing: 0; op
 
 /* Subir: con cientos de filas, el navegador solo dibuja las que están a la vista. */
 .track.up-row { content-visibility: auto; contain-intrinsic-size: auto 64px; }
+
+/* ---------- Editor de canciones (solo administradores) ---------- */
+.modal:has(.edit-form) { width: min(520px, 100%); max-height: calc(100dvh - 40px); overflow: auto; }
+.edit-form .edit-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.edit-form .edit-note { margin: -6px 0 14px; color: var(--muted); }
+.edit-form input[type="file"] { padding: 9px 12px; font-size: 13px; }
+.select-bar svg, .btn.edit-many svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; flex: none; }
+.select-bar .btn, .btn.edit-many { display: inline-flex; align-items: center; gap: 6px; }
+.select-bar {
+  position: fixed;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: calc(var(--player) + var(--tabbar) + var(--safe-b) + 16px);
+  z-index: 55;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: #161a22;
+  border: 1px solid rgba(46, 242, 192, 0.35);
+  border-radius: 999px;
+  padding: 8px 8px 8px 18px;
+  box-shadow: var(--shadow);
+  max-width: calc(100vw - 24px);
+}
+.select-count { font-weight: 600; white-space: nowrap; margin-right: 4px; }
+.select-bar .btn { white-space: nowrap; }
+body.selecting .track { cursor: pointer; }
+body.selecting .track.is-selected { background: rgba(46, 242, 192, 0.12); box-shadow: inset 3px 0 0 var(--aqua); }
+body.selecting .track.is-selected .track-title { color: var(--aqua); }
+body.selecting .track.no-select { opacity: 0.45; }
+body.selecting .view::after { content: ""; display: block; height: 96px; } /* que la barra no tape la última fila */
+@media (max-width: 700px) {
+  .select-bar { gap: 6px; padding: 6px 6px 6px 14px; width: calc(100vw - 16px); justify-content: space-between; }
+  .select-bar .btn { padding-left: 12px; padding-right: 12px; }
+  .select-count { font-size: 14px; }
+}

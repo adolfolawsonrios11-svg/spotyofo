@@ -26,6 +26,7 @@ import devicelibrary
 import genres
 import localfiles
 import playlistedit
+import trackedit
 import uploads
 from config import HOST, PORT, TRUST_PROXY
 from db import TRACK_SQL, connect, init_schema, row_dict
@@ -1396,6 +1397,73 @@ def delete_track(track_id):
     except uploads.UploadError as exc:
         return fail(exc.message, exc.code)
     return jsonify(ok=True)
+
+
+# ---------- edición de canciones: solo administradores (cambia la base de datos, no los archivos) ----------
+
+EDIT_PER_WINDOW = 60
+EDIT_WINDOW = 60
+
+
+def edit_rate_limited():
+    key = ("track-edit", uid())
+    if accounts.limiter.count(key, EDIT_WINDOW) >= EDIT_PER_WINDOW:
+        return True
+    accounts.limiter.hit(key, EDIT_WINDOW)
+    return False
+
+
+def describe_changes(changes):
+    return ", ".join(f"{key}={str(value)[:60]!r}" for key, value in sorted(changes.items()))
+
+
+@app.patch("/api/tracks/batch")
+@require_admin
+def edit_tracks_batch():
+    if edit_rate_limited():
+        return fail(ERROR_TEXT[429], 429)
+    body = request.get_json(silent=True)
+    if not isinstance(body, dict):
+        return fail("Petición no válida.")
+    try:
+        ids = trackedit.clean_ids(body.get("ids"))
+        changes = trackedit.clean_changes(body.get("changes"), batch=True)
+        summary = trackedit.edit_tracks(get_db(), ids, changes)
+    except trackedit.EditError as exc:
+        return fail(exc.message, exc.code, field=exc.field)
+    log.info("Admin %s editó %s canciones (%s): %s", g.user["username"], len(ids), ",".join(map(str, ids[:20])) + ("..." if len(ids) > 20 else ""), describe_changes(changes))
+    marks = ", ".join(["%s"] * len(ids))
+    tracks = tracks_where(f"WHERE t.id IN ({marks})", tuple(ids))
+    return jsonify(ok=True, summary=summary, tracks=tracks)
+
+
+@app.patch("/api/tracks/<int:track_id>")
+@require_admin
+def edit_track(track_id):
+    if edit_rate_limited():
+        return fail(ERROR_TEXT[429], 429)
+    body = request.get_json(silent=True)
+    try:
+        changes = trackedit.clean_changes(body)
+        summary = trackedit.edit_tracks(get_db(), [track_id], changes)
+    except trackedit.EditError as exc:
+        return fail(exc.message, exc.code, field=exc.field)
+    log.info("Admin %s editó la canción %s: %s", g.user["username"], track_id, describe_changes(changes))
+    found = tracks_where("WHERE t.id = %s", (track_id,))
+    return jsonify(ok=True, summary=summary, track=found[0] if found else None)
+
+
+@app.post("/api/albums/<int:album_id>/cover")
+@require_admin
+def edit_album_cover(album_id):
+    if edit_rate_limited():
+        return fail(ERROR_TEXT[429], 429)
+    try:
+        cover = trackedit.set_album_cover(get_db(), album_id, request.files.get("file"))
+    except trackedit.EditError as exc:
+        return fail(exc.message, exc.code)
+    log.info("Admin %s cambió la portada del álbum %s", g.user["username"], album_id)
+    return jsonify(ok=True, cover_url=f"/static/covers/{cover}")
 
 
 if __name__ == "__main__":
