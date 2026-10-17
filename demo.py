@@ -145,6 +145,9 @@ def reset(conn, password):
                 removed["device_likes"] = cur.rowcount
                 cur.execute("DELETE FROM play_history WHERE user_id = %s", (user_id,))
                 removed["history"] = cur.rowcount
+                # La demo no guarda radios favoritas (403), pero si alguna quedó, se borra igual.
+                cur.execute("DELETE FROM radio_favorites WHERE user_id = %s", (user_id,))
+                removed["radio_favorites"] = cur.rowcount
 
                 seed = _pick_seed(cur)
                 accent_a, accent_b = playlistedit.PALETTE[2]

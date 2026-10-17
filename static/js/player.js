@@ -1,4 +1,4 @@
-import { api } from "./api.js?v=20261007b";
+import { api } from "./api.js?v=20261017a";
 
 export const EQ_FREQS = [31, 62, 125, 250, 500, 1000, 2000, 4000, 8000, 16000];
 export const EQ_LABELS = ["31", "62", "125", "250", "500", "1k", "2k", "4k", "8k", "16k"];
@@ -196,6 +196,15 @@ export function createPlayer() {
   let silentUrl = "";
   let sessionReady = false;
   let lastPosition = 0;
+  // Radio en vivo: elemento propio, nativo (sin Web Audio: los streams de terceros no traen CORS
+  // y conectados al grafo sonarían en silencio). Sin cola, sin saltos, sin crossfade.
+  const RADIO_START_TIMEOUT = 20000;
+  const radioEl = new Audio();
+  radioEl.preload = "none";
+  radioEl.setAttribute("playsinline", "");
+  let radio = null; // { station, status: connecting|live|paused|error, playing, want, token, retried, pausedAt, clicked }
+  let radioToken = 0;
+  let radioTimer = 0;
   const freq = new Uint8Array(128);
   // Recuperación: la música debe seguir aunque se corte la red o el sistema suspenda el audio.
   const rec = {
@@ -596,6 +605,15 @@ export function createPlayer() {
   function applyVolume() {
     if (nodes) setParam(nodes.master.gain, state.muted ? 0 : state.volume);
     else decks.forEach(applyNativeVolume);
+    applyRadioVolume();
+  }
+
+  function applyRadioVolume() {
+    try {
+      radioEl.volume = clamp(state.muted ? 0 : state.volume, 0, 1, 0);
+    } catch {
+      /* iOS no permite cambiar el volumen del elemento */
+    }
   }
 
   function applySpeedTo(deck) {
@@ -942,6 +960,7 @@ export function createPlayer() {
 
   function playIndex(index, options = {}) {
     if (!state.queue.length) return Promise.resolve();
+    if (radio) stopRadio();
     const token = ++playToken;
     finishFade();
     markInternal();
@@ -1015,7 +1034,11 @@ export function createPlayer() {
     } catch {
       /* MediaMetadata no disponible */
     }
-    if (sessionReady) return;
+    ensureSessionHandlers();
+  }
+
+  function ensureSessionHandlers() {
+    if (sessionReady || !("mediaSession" in navigator)) return;
     sessionReady = true;
     const handlers = {
       play: () => resume(),
@@ -1029,6 +1052,7 @@ export function createPlayer() {
       seekbackward: (details) => seekBy(-(details?.seekOffset || 10)),
       seekforward: (details) => seekBy(details?.seekOffset || 10),
       seekto: (details) => {
+        if (radio) return;
         finishFade();
         const el = activeDeck().el;
         if (!Number.isFinite(details?.seekTime)) return;
@@ -1049,14 +1073,16 @@ export function createPlayer() {
   function updatePlaybackState() {
     if (!("mediaSession" in navigator)) return;
     try {
-      navigator.mediaSession.playbackState = current() ? (state.playing ? "playing" : "paused") : "none";
+      navigator.mediaSession.playbackState = radio
+      ? (radio.playing || radio.status === "connecting" ? "playing" : "paused")
+      : current() ? (state.playing ? "playing" : "paused") : "none";
     } catch {
       /* sin soporte */
     }
   }
 
   function updatePosition() {
-    if (!("mediaSession" in navigator) || typeof navigator.mediaSession.setPositionState !== "function") return;
+    if (radio || !("mediaSession" in navigator) || typeof navigator.mediaSession.setPositionState !== "function") return;
     const el = activeDeck().el;
     const duration = el.duration;
     if (!Number.isFinite(duration) || duration <= 0) return;
@@ -1071,14 +1097,239 @@ export function createPlayer() {
     }
   }
 
+  // ---------- radio en vivo ----------
+
+  function radioSnapshot() {
+    return radio ? { station: radio.station, status: radio.status, playing: radio.playing } : null;
+  }
+
+  function emitRadio() {
+    updatePlaybackState();
+    emit("state", snapshot());
+  }
+
+  function clearRadioTimer() {
+    if (radioTimer) clearTimeout(radioTimer);
+    radioTimer = 0;
+  }
+
+  function armRadioTimer() {
+    clearRadioTimer();
+    const token = radio?.token;
+    radioTimer = setTimeout(() => {
+      if (radio && radio.token === token && radio.want && !radio.playing) radioFailed("timeout");
+    }, RADIO_START_TIMEOUT);
+  }
+
+  // Sin seek ni anterior/siguiente en la pantalla bloqueada mientras suena una radio.
+  function sessionRadioMode(on) {
+    if (!("mediaSession" in navigator)) return;
+    ensureSessionHandlers();
+    const off = ["previoustrack", "nexttrack", "seekbackward", "seekforward", "seekto"];
+    if (on) {
+      off.forEach((action) => {
+        try {
+          navigator.mediaSession.setActionHandler(action, null);
+        } catch {
+          /* acción no soportada */
+        }
+      });
+      try {
+        navigator.mediaSession.setPositionState?.();
+      } catch {
+        /* sin soporte */
+      }
+    } else {
+      sessionReady = false;
+      ensureSessionHandlers();
+    }
+  }
+
+  function syncRadioSession(station) {
+    if (!("mediaSession" in navigator)) return;
+    try {
+      const art = station.favicon
+        ? [{ src: station.favicon, sizes: "256x256" }, { src: new URL("/static/icons/icon-512.png", location.href).href, sizes: "512x512" }]
+        : [{ src: new URL("/static/icons/icon-512.png", location.href).href, sizes: "512x512", type: "image/png" }];
+      navigator.mediaSession.metadata = new MediaMetadata({
+        title: station.name || "Radio",
+        artist: `EN VIVO${station.country ? ` · ${station.country}` : ""}`,
+        album: "Radio · SpotyOFO",
+        artwork: art,
+      });
+    } catch {
+      /* MediaMetadata no disponible */
+    }
+    sessionRadioMode(true);
+  }
+
+  function radioFailed(reason) {
+    if (!radio) return;
+    clearRadioTimer();
+    // Un reintento silencioso (cortes breves del servidor de la emisora), después aviso.
+    if (radio.want && !radio.retried) {
+      radio.retried = true;
+      radio.status = "connecting";
+      emitRadio();
+      const token = radio.token;
+      setTimeout(() => {
+        if (radio && radio.token === token && radio.want) startRadioEl();
+      }, 1500);
+      return;
+    }
+    const name = radio.station.name || "La radio";
+    radio.want = false;
+    radio.playing = false;
+    radio.status = "error";
+    try {
+      radioEl.pause();
+      radioEl.removeAttribute("src");
+      radioEl.load();
+    } catch {
+      /* nada que limpiar */
+    }
+    // Chrome informa igual (código 4) un servidor caído y un formato no soportado: un solo aviso claro.
+    emit("notice", `«${name}» no responde ahora. Puede estar fuera del aire o usar un formato que este navegador no reproduce; prueba con otra radio.`);
+    emitRadio();
+  }
+
+  function startRadioEl() {
+    if (!radio) return Promise.resolve();
+    const token = radio.token;
+    radio.want = true;
+    radio.status = "connecting";
+    radio.playing = false;
+    applyRadioVolume();
+    if (cfg.sinkId && typeof radioEl.setSinkId === "function") radioEl.setSinkId(cfg.sinkId === "default" ? "" : cfg.sinkId).catch(() => {});
+    // Siempre se vuelve a abrir el stream: así se retoma «en vivo» y no desde lo que quedó en búfer.
+    radioEl.src = radio.station.url;
+    armRadioTimer();
+    emitRadio();
+    return radioEl.play().catch((error) => {
+      if (!radio || radio.token !== token || error.name === "AbortError") return;
+      if (error.name === "NotAllowedError") {
+        clearRadioTimer();
+        radio.want = false;
+        radio.status = "paused";
+        emit("error", error);
+        emitRadio();
+        return;
+      }
+      radioFailed(error.name === "NotSupportedError" && !radioEl.error ? "unsupported" : "error");
+    });
+  }
+
+  radioEl.addEventListener("playing", () => {
+    if (!radio) return;
+    clearRadioTimer();
+    radio.playing = true;
+    radio.status = "live";
+    radio.retried = false;
+    if (!radio.clicked) {
+      radio.clicked = true;
+      api.radioClick(radio.station.stationuuid).catch(() => {});
+    }
+    emitRadio();
+  });
+  radioEl.addEventListener("pause", () => {
+    if (!radio || !radio.playing) return;
+    // Pausa desde el sistema (auriculares, llamada, pantalla bloqueada): se respeta.
+    radio.playing = false;
+    radio.want = false;
+    radio.status = "paused";
+    radio.pausedAt = Date.now();
+    clearRadioTimer();
+    emitRadio();
+  });
+  ["waiting", "stalled"].forEach((type) => radioEl.addEventListener(type, () => {
+    if (!radio || !radio.want) return;
+    if (radio.status === "live") {
+      radio.status = "connecting";
+      emitRadio();
+    }
+    armRadioTimer();
+  }));
+  radioEl.addEventListener("ended", () => {
+    // Un stream en vivo no termina: si lo hace, se cortó la transmisión.
+    if (radio && radio.want) radioFailed("ended");
+  });
+  radioEl.addEventListener("error", () => {
+    if (!radio || !radio.want || !radioEl.getAttribute("src")) return;
+    const code = radioEl.error?.code;
+    radioFailed(code === 4 ? "unsupported" : "error");
+  });
+
+  function playRadio(station) {
+    if (!station || !/^https:\/\//i.test(station.url || "")) {
+      emit("notice", "Esta radio no tiene un stream seguro (https) y no se puede escuchar aquí.");
+      return Promise.resolve();
+    }
+    // Detiene las canciones (sin perder la cola) y pasa al modo radio.
+    playToken += 1;
+    finishFade();
+    rec.want = false;
+    clearStall();
+    if (rec.retryTimer) clearTimeout(rec.retryTimer);
+    rec.retryTimer = 0;
+    rec.recovering = false;
+    markInternal();
+    decks.forEach((deck) => {
+      if (!deck.el.paused) deck.el.pause();
+    });
+    state.playing = false;
+    stopViz();
+    stopTick();
+    const same = radio && radio.station.stationuuid === station.stationuuid;
+    radio = { station, status: "connecting", playing: false, want: true, token: ++radioToken, retried: false, pausedAt: 0, clicked: same ? radio.clicked : false };
+    syncRadioSession(station);
+    return startRadioEl();
+  }
+
+  function pauseRadio() {
+    if (!radio) return;
+    clearRadioTimer();
+    radio.want = false;
+    radio.playing = false;
+    radio.status = "paused";
+    radio.pausedAt = Date.now();
+    radioEl.pause();
+    emitRadio();
+  }
+
+  function resumeRadio() {
+    if (!radio) return Promise.resolve();
+    radio.token = ++radioToken;
+    radio.retried = false;
+    return startRadioEl();
+  }
+
+  function stopRadio() {
+    if (!radio) return;
+    clearRadioTimer();
+    radio = null;
+    try {
+      radioEl.pause();
+      radioEl.removeAttribute("src");
+      radioEl.load();
+    } catch {
+      /* nada que limpiar */
+    }
+    sessionRadioMode(false);
+    const track = current();
+    if (track) syncMediaSession(track);
+    updatePlaybackState();
+    emit("state", snapshot());
+  }
+
   // ---------- API pública ----------
 
   function snapshot() {
     return {
-      track: current(),
+      track: radio ? null : current(),
+      radio: radioSnapshot(),
       index: state.index,
       queue: state.queue,
-      playing: state.playing,
+      playing: radio ? radio.playing : state.playing,
       shuffle: state.shuffle,
       repeat: state.repeat,
       autoplay: state.autoplay,
@@ -1130,6 +1381,10 @@ export function createPlayer() {
   }
 
   function resume() {
+    if (radio) {
+      resumeRadio();
+      return;
+    }
     if (!current()) return;
     const deck = activeDeck();
     ensureGraph();
@@ -1158,6 +1413,10 @@ export function createPlayer() {
   }
 
   function pause() {
+    if (radio) {
+      pauseRadio();
+      return;
+    }
     rec.want = false;
     clearStall();
     if (rec.retryTimer) clearTimeout(rec.retryTimer);
@@ -1168,13 +1427,18 @@ export function createPlayer() {
   }
 
   function toggle() {
+    if (radio) {
+      if (radio.want) pauseRadio();
+      else resumeRadio();
+      return;
+    }
     if (!current()) return;
     if (activeDeck().el.paused) resume();
     else pause();
   }
 
   function next(fromEnd = false, options = {}) {
-    if (!state.queue.length) return;
+    if (radio || !state.queue.length) return;
     if (fromEnd && state.repeat === "one" && !options.skipBroken) {
       activeDeck().el.currentTime = 0;
       resume();
@@ -1193,7 +1457,7 @@ export function createPlayer() {
   }
 
   function previous() {
-    if (!current()) return;
+    if (radio || !current()) return;
     finishFade();
     const el = activeDeck().el;
     if (el.currentTime > 3) {
@@ -1233,6 +1497,7 @@ export function createPlayer() {
   }
 
   function seekRatio(ratio) {
+    if (radio) return;
     finishFade();
     const el = activeDeck().el;
     if (!el.duration) return;
@@ -1241,6 +1506,7 @@ export function createPlayer() {
   }
 
   function seekBy(seconds) {
+    if (radio) return;
     finishFade();
     const el = activeDeck().el;
     if (!el.duration) return;
@@ -1553,6 +1819,11 @@ export function createPlayer() {
     watchdog();
   });
   window.addEventListener("online", () => {
+    if (radio && radio.want && !radio.playing) {
+      radio.retried = false;
+      startRadioEl();
+      return;
+    }
     const el = activeDeck().el;
     if (rec.want && activeDeck().loadedUrl && (el.error || el.readyState < 3)) {
       if (rec.retryTimer) clearTimeout(rec.retryTimer);
@@ -1571,11 +1842,17 @@ export function createPlayer() {
     applySpeedTo(deck);
     applyNativeVolume(deck);
   });
+  applyRadioVolume();
 
   return {
     on,
-    current,
+    current: () => (radio ? null : current()),
     snapshot,
+    playRadio,
+    pauseRadio,
+    resumeRadio,
+    stopRadio,
+    radio: radioSnapshot,
     playContext,
     playShuffled,
     contextId,
@@ -1629,7 +1906,11 @@ export function createPlayer() {
         deck: deck.n,
       };
     },
+    radioHealth() {
+      return { status: radio?.status || null, paused: radioEl.paused, readyState: radioEl.readyState, time: radioEl.currentTime, src: radioEl.currentSrc, error: radioEl.error?.code || 0 };
+    },
     position() {
+      if (radio) return { current: radioEl.currentTime || 0, duration: 0 };
       const el = activeDeck().el;
       return { current: el.currentTime || 0, duration: el.duration || 0 };
     },

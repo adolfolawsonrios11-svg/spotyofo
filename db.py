@@ -175,6 +175,25 @@ CREATE TABLE IF NOT EXISTS device_playlist_tracks (
   CONSTRAINT fk_dpt_playlist FOREIGN KEY (playlist_id) REFERENCES playlists(id) ON DELETE CASCADE,
   CONSTRAINT fk_dpt_track FOREIGN KEY (track_id) REFERENCES device_tracks(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Radio en vivo: emisoras favoritas de cada cuenta (datos copiados de Radio Browser al guardar).
+CREATE TABLE IF NOT EXISTS radio_favorites (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  user_id INT NOT NULL,
+  stationuuid CHAR(36) NOT NULL,
+  name VARCHAR(160) NOT NULL,
+  url VARCHAR(1000) NOT NULL,
+  favicon VARCHAR(1000) NOT NULL DEFAULT '',
+  country VARCHAR(80) NOT NULL DEFAULT '',
+  countrycode CHAR(2) NOT NULL DEFAULT '',
+  tags VARCHAR(400) NOT NULL DEFAULT '',
+  codec VARCHAR(20) NOT NULL DEFAULT '',
+  bitrate SMALLINT UNSIGNED NOT NULL DEFAULT 0,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY uq_radio_fav (user_id, stationuuid),
+  KEY idx_radio_fav_user (user_id, created_at),
+  CONSTRAINT fk_radio_fav_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 """
 
 # El primer parámetro de TRACK_SQL es siempre el id del usuario (sus Me gusta).

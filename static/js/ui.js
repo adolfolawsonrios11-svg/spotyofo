@@ -1,6 +1,7 @@
-import { api, onSessionExpired, setCsrf } from "./api.js?v=20261007b";
-import { EQ_FREQS, EQ_LABELS, EQ_PRESETS } from "./player.js?v=20261007b";
-import { canPickDirectory, grantDirectory, listDirectory, pickDirectory, rememberFiles, rootStatus, setLikedMany } from "./localdisk.js?v=20261007b";
+import { api, onSessionExpired, setCsrf } from "./api.js?v=20261017a";
+import { EQ_FREQS, EQ_LABELS, EQ_PRESETS } from "./player.js?v=20261017a";
+import { createRadio } from "./radio.js?v=20261017a";
+import { canPickDirectory, grantDirectory, listDirectory, pickDirectory, rememberFiles, rootStatus, setLikedMany } from "./localdisk.js?v=20261017a";
 
 const known = new Map();
 const UPLOAD_EXT = [".mp3", ".m4a", ".mp4", ".aac", ".flac", ".ogg", ".oga", ".opus", ".wav"];
@@ -71,6 +72,7 @@ export function createUI(player) {
   const appEl = document.getElementById("app");
   const desktopQuery = window.matchMedia("(min-width: 1101px)");
   const phoneQuery = window.matchMedia("(max-width: 700px)");
+  const radioView = createRadio({ player, view, esc, showToast, isDemo });
 
   function esc(value) {
     return String(value ?? "").replace(/[&<>"']/g, (char) => ({
@@ -1665,6 +1667,7 @@ export function createUI(player) {
     closeSide();
     if (!name) return show(renderHome);
     if (name === "audio") return show(renderAudio).then(afterAudio);
+    if (name === "radio") return show(() => radioView.render(arg)).then(() => radioView.mounted());
     if (name === "search") {
       const query = arg ? decodeURIComponent(parts().slice(1).join("/")) : "";
       if (document.activeElement !== searchInput) searchInput.value = query;
@@ -1773,6 +1776,15 @@ export function createUI(player) {
     const volume = document.getElementById("p-volume");
     volume.value = String(Math.round((snap.muted ? 0 : snap.volume) * 100));
     paintRange(volume);
+    document.body.classList.toggle("is-radio", Boolean(snap.radio));
+    radioView.sync(snap);
+    if (snap.radio) {
+      syncRadioPlayer(snap.radio, { title, artist, cover, like, nowLike });
+      return;
+    }
+    [like, nowLike].forEach((button) => button.setAttribute("aria-label", "Me gusta"));
+    cover.classList.remove("has-logo");
+    document.getElementById("now-cover").classList.remove("has-logo");
     if (!track) {
       title.textContent = "Elige una pista";
       artist.textContent = "";
@@ -1809,7 +1821,56 @@ export function createUI(player) {
     if (drawerMode === "queue") renderQueue(snap);
   }
 
+  // Radio en vivo en la barra y en «Ahora suena»: emisora, estado y corazón de Mis radios.
+  function radioStatusText(radio) {
+    if (radio.status === "connecting") return "Conectando…";
+    if (radio.status === "error") return "Sin señal";
+    if (radio.status === "paused") return "En pausa";
+    return "EN VIVO";
+  }
+
+  function syncRadioPlayer(radio, els) {
+    const station = radio.station;
+    const place = [station.country, station.region_label].filter(Boolean).join(" · ");
+    const status = radioStatusText(radio);
+    const fallback = "/static/icons/icon-192.png";
+    els.title.textContent = station.name;
+    els.artist.textContent = place ? `${status} · ${place}` : status;
+    const art = station.favicon || fallback;
+    if (els.cover.getAttribute("src") !== art) els.cover.src = art;
+    els.cover.classList.toggle("has-logo", Boolean(station.favicon));
+    els.cover.alt = "";
+    document.body.classList.add("has-track");
+    const fav = radioView.isFavorite(station.stationuuid);
+    [els.like, els.nowLike].forEach((button) => {
+      button.disabled = false;
+      button.classList.toggle("is-on", fav);
+      button.setAttribute("aria-pressed", String(fav));
+      button.setAttribute("aria-label", fav ? "Quitar de Mis radios" : "Guardar en Mis radios");
+    });
+    document.getElementById("p-add").disabled = true;
+    ["p-live", "now-live"].forEach((id) => {
+      const badge = document.getElementById(id);
+      if (!badge) return;
+      badge.textContent = status;
+      badge.dataset.status = radio.status;
+    });
+    document.getElementById("np-open").setAttribute("aria-label", `Abrir ahora suena: ${station.name}, radio en vivo`);
+    document.title = `${station.name} · ${status} — SpotyOFO`;
+    document.getElementById("now-title").textContent = station.name;
+    document.getElementById("now-artist").textContent = place;
+    document.getElementById("now-kicker").textContent = "Radio en vivo";
+    document.getElementById("now-meta").textContent = [station.tags.slice(0, 3).join(", "), station.codec, station.bitrate ? `${station.bitrate} kbps` : ""].filter(Boolean).join(" · ");
+    const nowCover = document.getElementById("now-cover");
+    if (nowCover.getAttribute("src") !== art) nowCover.src = art;
+    nowCover.classList.toggle("has-logo", Boolean(station.favicon));
+    document.getElementById("now-bg").style.backgroundImage = "none";
+    document.getElementById("p-mini-bar").style.transform = "scaleX(1)";
+    markPlaying();
+  }
+
   function syncTime(time) {
+    if (player.radio()) return;
     const ratio = time.duration ? Math.min(1, time.current / time.duration) : 0;
     document.getElementById("p-mini-bar").style.transform = `scaleX(${ratio})`;
     const elapsed = fmt(time.current * 1000);
@@ -2138,7 +2199,7 @@ export function createUI(player) {
   // ---------- Ahora suena (pantalla completa) ----------
 
   function openNow() {
-    if (!player.current() || !now.hidden) return;
+    if ((!player.current() && !player.radio()) || !now.hidden) return;
     lastFocus = document.activeElement;
     now.hidden = false;
     now.style.transform = "";
@@ -3292,10 +3353,19 @@ export function createUI(player) {
       if (track) addTrackToPlaylist(track).catch((error) => showToast(error.message));
     });
     document.getElementById("p-like").addEventListener("click", () => {
+      if (player.radio()) {
+        radioView.toggleCurrent();
+        return;
+      }
       const track = player.current();
       if (track) toggleLike(track.id).catch((error) => showToast(error.message));
     });
     document.getElementById("p-title").addEventListener("click", () => {
+      if (player.radio()) {
+        if (phoneQuery.matches) openNow();
+        else go(radioView.hash());
+        return;
+      }
       const track = player.current();
       if (!track) return;
       if (phoneQuery.matches) {
@@ -3330,6 +3400,10 @@ export function createUI(player) {
       if (action === "next") player.next();
       if (action === "shuffle") player.toggleShuffle();
       if (action === "repeat") player.cycleRepeat();
+      if (action === "like" && player.radio()) {
+        radioView.toggleCurrent();
+        return;
+      }
       if (action === "like") {
         const track = player.current();
         if (track) toggleLike(track.id).catch((error) => showToast(error.message));
@@ -3443,6 +3517,17 @@ export function createUI(player) {
         if (outputsLoaded) loadOutputs().catch(() => {});
       });
     }
+    radioView.onFooter(syncPlayer);
+    // Logo de emisora roto en la barra o en «Ahora suena»: ícono de la app.
+    ["p-cover", "now-cover"].forEach((id) => {
+      const img = document.getElementById(id);
+      img.addEventListener("error", () => {
+        if (player.radio() && !img.src.endsWith("/static/icons/icon-192.png")) {
+          img.classList.remove("has-logo");
+          img.src = "/static/icons/icon-192.png";
+        }
+      });
+    });
     player.on("state", syncPlayer);
     player.on("time", syncTime);
     const snap = player.snapshot();

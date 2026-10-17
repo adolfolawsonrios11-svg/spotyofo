@@ -141,5 +141,11 @@ export const api = {
   // Edición de canciones (solo administradores).
   editTrack: (id, changes) => request(`/api/tracks/${id}`, { method: "PATCH", body: JSON.stringify(changes) }),
   editTracks: (ids, changes) => request("/api/tracks/batch", { method: "PATCH", body: JSON.stringify({ ids, changes }) }),
+  radioMeta: () => request("/api/radio/meta"),
+  radioSearch: (params = {}) => request(`/api/radio/search?${new URLSearchParams(params)}`),
+  radioFavorites: () => request("/api/radio/favorites"),
+  radioFavoriteAdd: (uuid) => request("/api/radio/favorites", { method: "POST", body: JSON.stringify({ stationuuid: uuid }) }),
+  radioFavoriteRemove: (uuid) => request(`/api/radio/favorites/${encodeURIComponent(uuid)}`, { method: "DELETE" }),
+  radioClick: (uuid) => request("/api/radio/click", { method: "POST", body: JSON.stringify({ stationuuid: uuid }) }),
   albumCover: uploadCover,
 };

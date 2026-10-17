@@ -26,6 +26,7 @@ import devicelibrary
 import genres
 import localfiles
 import playlistedit
+import radio
 import trackedit
 import uploads
 from config import HOST, PORT, TRUST_PROXY
@@ -128,8 +129,10 @@ CSP = "; ".join([
     "script-src 'self'",
     "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
     "font-src 'self' https://fonts.gstatic.com",
-    "img-src 'self' data: blob:",
-    "media-src 'self' blob:",
+    # Radio en vivo: los logos (favicon) y los streams vienen de cada emisora. Solo https:
+    # (nunca http: ni comodines de script/conexión); el audio no pasa por este servidor.
+    "img-src 'self' data: blob: https:",
+    "media-src 'self' blob: https:",
     "connect-src 'self' https://fonts.googleapis.com https://fonts.gstatic.com",
     "worker-src 'self'",
     "manifest-src 'self'",
@@ -1496,6 +1499,138 @@ def edit_album_cover(album_id):
         return fail(exc.message, exc.code)
     log.info("%s cambió la portada del álbum %s", actor_label(), album_id)
     return jsonify(ok=True, cover_url=f"/static/covers/{cover}")
+
+
+# ---------- radio en vivo (Radio Browser vía proxy con caché; el audio va directo a cada emisora) ----------
+
+RADIO_PER_WINDOW = 120
+RADIO_FAV_PER_WINDOW = 60
+RADIO_CLICK_PER_WINDOW = 30
+RADIO_WINDOW = 60
+
+
+def radio_rate_limited(kind, limit):
+    key = (kind, uid())
+    if accounts.limiter.count(key, RADIO_WINDOW) >= limit:
+        return True
+    accounts.limiter.hit(key, RADIO_WINDOW)
+    return False
+
+
+def radio_uuid(value):
+    value = str(value or "").strip().lower()
+    return value if radio.UUID_RE.match(value) else None
+
+
+@app.get("/api/radio/meta")
+def radio_meta():
+    if radio_rate_limited("radio", RADIO_PER_WINDOW):
+        return fail(ERROR_TEXT[429], 429)
+    try:
+        data = radio.meta()
+    except radio.RadioError as exc:
+        return fail(str(exc), exc.status)
+    return jsonify(dict(data, demo=is_demo(), max_favorites=radio.MAX_FAVORITES))
+
+
+@app.get("/api/radio/search")
+def radio_search():
+    """?scope=nacional|regional|mundial&q=&country=&region=&genre=&tag=&order=clicks|votes|trend|name&offset=&limit="""
+    if radio_rate_limited("radio", RADIO_PER_WINDOW):
+        return fail(ERROR_TEXT[429], 429)
+    args = request.args
+    scope = args.get("scope", "nacional")
+    if scope not in radio.SCOPES:
+        return fail("Parámetro no válido: scope.")
+    order = args.get("order", "clicks")
+    if order not in radio.ORDERS:
+        return fail("Parámetro no válido: order.")
+    try:
+        offset = int_arg("offset", 0, 0, radio.OFFSET_MAX)
+        limit = int_arg("limit", 30, 1, radio.PAGE_MAX)
+    except ValueError as exc:
+        return fail(f"Parámetro no válido: {exc}.")
+    q = args.get("q", "").strip()[:80]
+    tag = args.get("tag", "").strip()[:40]
+    genre = args.get("genre", "").strip()
+    if genre and genre not in radio.GENRE_BY_KEY:
+        return fail("Parámetro no válido: genre.")
+    region = args.get("region", "").strip()
+    if region and (scope != "nacional" or (region not in radio.REGION_BY_KEY and region != "otras")):
+        return fail("Parámetro no válido: region.")
+    country = args.get("country", "").strip().upper()
+    if scope == "nacional":
+        country = "CL"
+    elif scope == "regional":
+        country = country or "AR"
+        if country not in radio.LATAM:
+            return fail("Parámetro no válido: country.")
+    elif country and not radio.CC_RE.match(country):
+        return fail("Parámetro no válido: country.")
+    try:
+        result = radio.search(scope, q=q, country=country if scope != "nacional" else "CL", region=region,
+                              genre=genre, tag=tag, order=order, offset=offset, limit=limit)
+    except radio.RadioError as exc:
+        return fail(str(exc), exc.status)
+    favorites = radio.favorite_ids(get_db(), uid())
+    return jsonify(
+        scope=scope, country=country, region=region, genre=genre, order=order, offset=offset, limit=limit,
+        total=result["total"], has_more=result["has_more"], stale=result["stale"], next_offset=result["next_offset"],
+        stations=[radio.public(station, favorites) for station in result["stations"]],
+    )
+
+
+@app.post("/api/radio/click")
+def radio_click():
+    """Al empezar a sonar una emisora: avisa a Radio Browser en segundo plano (la demo no suma, como en las canciones)."""
+    body = request.get_json(silent=True) or {}
+    uuid = radio_uuid(body.get("stationuuid") if isinstance(body, dict) else None)
+    if not uuid:
+        return fail("Emisora no válida.")
+    if is_demo() or radio_rate_limited("radio-click", RADIO_CLICK_PER_WINDOW):
+        return jsonify(ok=True, counted=False), 202
+    return jsonify(ok=True, counted=radio.register_click(uid(), uuid)), 202
+
+
+@app.get("/api/radio/favorites")
+def radio_favorites():
+    return jsonify(favorites=radio.list_favorites(get_db(), uid()), demo=is_demo(), max=radio.MAX_FAVORITES)
+
+
+@app.post("/api/radio/favorites")
+def radio_favorite_add():
+    if is_demo():
+        return fail("La cuenta demo puede escuchar radios, pero no guardarlas en Mis radios.", 403)
+    if radio_rate_limited("radio-fav", RADIO_FAV_PER_WINDOW):
+        return fail(ERROR_TEXT[429], 429)
+    body = request.get_json(silent=True) or {}
+    uuid = radio_uuid(body.get("stationuuid") if isinstance(body, dict) else None)
+    if not uuid:
+        return fail("Emisora no válida.")
+    try:
+        # Los datos se toman de Radio Browser (o de la caché), nunca del navegador.
+        station, problem = radio.lookup(uuid)
+        if problem == "not_found":
+            return fail("No se encontró esa emisora.", 404)
+        if problem == "unplayable":
+            return fail("Esa emisora no se puede escuchar aquí (no usa https o es una lista HLS).", 422)
+        added = radio.add_favorite(get_db(), uid(), station)
+    except radio.RadioError as exc:
+        return fail(str(exc), exc.status)
+    favorite = radio.public(station, {uuid})
+    return jsonify(ok=True, added=added, favorite=favorite), 201 if added else 200
+
+
+@app.delete("/api/radio/favorites/<uuid>")
+def radio_favorite_remove(uuid):
+    if is_demo():
+        return fail("La cuenta demo puede escuchar radios, pero no guardarlas en Mis radios.", 403)
+    if radio_rate_limited("radio-fav", RADIO_FAV_PER_WINDOW):
+        return fail(ERROR_TEXT[429], 429)
+    clean = radio_uuid(uuid)
+    if not clean:
+        return fail("Emisora no válida.")
+    return jsonify(ok=True, removed=radio.remove_favorite(get_db(), uid(), clean))
 
 
 if __name__ == "__main__":
