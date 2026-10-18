@@ -1,0 +1,12 @@
+[
+  {
+    "relation": ["delegate_permission/common.handle_all_urls"],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "cl.ofotech.spotyofo",
+      "sha256_cert_fingerprints": [
+        "0E:B2:2C:6E:22:45:87:C3:9B:E8:E4:92:51:07:B7:B6:D6:A7:0D:DB:1E:84:C5:6F:BF:06:FC:25:BF:36:20:76"
+      ]
+    }
+  }
+]

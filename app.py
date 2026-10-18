@@ -2,6 +2,7 @@
 
 import gzip
 import hmac
+import json
 import logging
 import os
 import re
@@ -120,7 +121,7 @@ write_playlist_cover = playlistedit.write_playlist_cover
 # ---------- seguridad: rutas públicas, cabeceras y CSRF ----------
 
 # Todo lo demás exige sesión (páginas, API, audio y portadas).
-PUBLIC_EXACT = {"/api/health", "/manifest.webmanifest", "/sw.js", "/favicon.ico", "/robots.txt"}
+PUBLIC_EXACT = {"/api/health", "/manifest.webmanifest", "/sw.js", "/favicon.ico", "/robots.txt", "/.well-known/assetlinks.json"}
 PUBLIC_PREFIX = ("/static/css/", "/static/js/", "/static/icons/", "/static/favicon.svg")
 AUTH_PAGES = {"/login", "/login/demo", "/register", "/setup", "/logout"}
 SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
@@ -757,6 +758,20 @@ def like_pattern(value):
 def web_manifest():
     path = ROOT_DIR / "pwa" / "manifest.webmanifest"
     return send_file(path, mimetype="application/manifest+json", max_age=0)
+
+
+# Digital Asset Links: vincula el sitio con la app Android (TWA cl.ofotech.spotyofo). Público, sin
+# sesión ni redirección (está en PUBLIC_EXACT), con caché corta para poder cambiar la huella si hace falta.
+# Se valida al arrancar y se sirve compacto (igual en Windows y Linux, sin depender de los saltos de línea).
+ASSETLINKS_FILE = ROOT_DIR / "wellknown" / "assetlinks.json"
+ASSETLINKS_BODY = json.dumps(json.loads(ASSETLINKS_FILE.read_text(encoding="utf-8")), separators=(",", ":"), ensure_ascii=False)
+
+
+@app.get("/.well-known/assetlinks.json")
+def assetlinks():
+    response = app.response_class(ASSETLINKS_BODY, mimetype="application/json")
+    response.headers["Cache-Control"] = "public, max-age=300"
+    return response
 
 
 @app.get("/sw.js")
