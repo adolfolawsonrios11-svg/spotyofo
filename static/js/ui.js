@@ -1,7 +1,7 @@
-import { api, onSessionExpired, setCsrf } from "./api.js?v=20261017a";
-import { EQ_FREQS, EQ_LABELS, EQ_PRESETS } from "./player.js?v=20261017a";
-import { createRadio } from "./radio.js?v=20261017a";
-import { canPickDirectory, grantDirectory, listDirectory, pickDirectory, rememberFiles, rootStatus, setLikedMany } from "./localdisk.js?v=20261017a";
+import { api, onSessionExpired, setCsrf } from "./api.js?v=20261018a";
+import { EQ_FREQS, EQ_LABELS, EQ_PRESETS } from "./player.js?v=20261018a";
+import { createRadio } from "./radio.js?v=20261018a";
+import { canPickDirectory, grantDirectory, listDirectory, pickDirectory, rememberFiles, rootStatus, setLikedMany } from "./localdisk.js?v=20261018a";
 
 const known = new Map();
 const UPLOAD_EXT = [".mp3", ".m4a", ".mp4", ".aac", ".flac", ".ogg", ".oga", ".opus", ".wav"];

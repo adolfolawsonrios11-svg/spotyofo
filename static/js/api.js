@@ -120,7 +120,15 @@ export const api = {
   likes: () => request("/api/likes"),
   toggleLike: (id, shownLiked = false) => request(`/api/likes/${id}`, { method: "POST", body: JSON.stringify({ shown_liked: Boolean(shownLiked) }) }),
   play: (trackId) => request("/api/plays", { method: "POST", body: JSON.stringify({ track_id: trackId }) }),
-  related: (id) => request(`/api/tracks/${id}/related`),
+  // Reproducción automática: «exclude» son los ids que no deben volver (cola o últimas sonadas).
+  related: (id, { exclude = [], seed, limit } = {}) => {
+    const params = new URLSearchParams();
+    if (exclude.length) params.set("exclude", exclude.join(","));
+    if (seed !== undefined) params.set("seed", String(seed));
+    if (limit) params.set("limit", String(limit));
+    const query = params.toString();
+    return request(`/api/tracks/${id}/related${query ? `?${query}` : ""}`);
+  },
   genres: () => request("/api/genres"),
   genre: (slug) => request(`/api/genres/${encodeURIComponent(slug)}`),
   search: (q, all = false) => request(`/api/search?q=${encodeURIComponent(q)}${all ? "&all=1" : ""}`),

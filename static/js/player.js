@@ -1,4 +1,4 @@
-import { api } from "./api.js?v=20261017a";
+import { api } from "./api.js?v=20261018a";
 
 export const EQ_FREQS = [31, 62, 125, 250, 500, 1000, 2000, 4000, 8000, 16000];
 export const EQ_LABELS = ["31", "62", "125", "250", "500", "1k", "2k", "4k", "8k", "16k"];
@@ -196,6 +196,16 @@ export function createPlayer() {
   let silentUrl = "";
   let sessionReady = false;
   let lastPosition = 0;
+  // Reproducción automática sin fin: al terminar la cola se piden canciones parecidas al servidor.
+  // Primero las que no están en la cola; si ya sonó todo, se permite repetir sin volver a las
+  // últimas ~20 (la ventana se achica solo si el catálogo es tan chico que no alcanza).
+  const RELATED_NO_REPEAT = [20, 5, 1];
+  const RELATED_EXCLUDE_MAX = 300;
+  const RELATED_RETRY = [1000, 3000, 10000]; // si /related falla: 1 s, 3 s y después cada 10 s
+  const END_NOTICE = "Se terminó la lista.";
+  const recentIds = []; // ids de catálogo que sonaron, el más reciente al final
+  let relatedTimer = 0;
+  let relatedSeq = 0;
   // Radio en vivo: elemento propio, nativo (sin Web Audio: los streams de terceros no traen CORS
   // y conectados al grafo sonarían en silencio). Sin cola, sin saltos, sin crossfade.
   const RADIO_START_TIMEOUT = 20000;
@@ -775,24 +785,60 @@ export function createPlayer() {
     prep = null;
   }
 
+  function catalogId(item) {
+    return item && item.source !== "device" && item.source !== "local" && item.id != null ? String(item.id) : null;
+  }
+
+  function noteRecent(track) {
+    const id = catalogId(track);
+    if (!id) return;
+    const at = recentIds.indexOf(id);
+    if (at >= 0) recentIds.splice(at, 1);
+    recentIds.push(id);
+    if (recentIds.length > 200) recentIds.splice(0, recentIds.length - 200);
+  }
+
+  // Devuelve la próxima canción automática, o null si de verdad no queda ninguna. Lanza si falla la red.
+  async function pickRelated(track) {
+    const seed = Math.floor(Math.random() * 2147483647);
+    const queued = [...new Set(state.queue.map(catalogId).filter(Boolean))];
+    const inQueue = new Set(queued);
+    const list = await api.related(track.id, { exclude: queued.slice(-RELATED_EXCLUDE_MAX), seed });
+    const fresh = list.find((item) => !inQueue.has(String(item.id)));
+    if (fresh) return fresh;
+    const own = catalogId(track);
+    for (const size of RELATED_NO_REPEAT) {
+      const recent = recentIds.slice(-size);
+      if (own && !recent.includes(own)) recent.push(own);
+      const blocked = new Set(recent);
+      const again = await api.related(track.id, { exclude: recent, seed });
+      const pick = again.find((item) => !blocked.has(String(item.id)));
+      if (pick) return pick;
+    }
+    return null;
+  }
+
+  function clearRelatedRetry() {
+    if (relatedTimer) clearTimeout(relatedTimer);
+    relatedTimer = 0;
+  }
+
   async function prepareNext() {
     const token = {};
     prep = { token, index: -1, track: null, ready: false };
     let index = upcomingIndex();
     const playing = current();
-    if (index === null && state.autoplay && playing && playing.source !== "device") {
+    if (index === null && state.autoplay && catalogId(playing)) {
       try {
-        const related = await api.related(playing.id);
+        const pick = await pickRelated(playing);
         if (prep?.token !== token) return;
-        const knownIds = new Set(state.queue.map((item) => String(item.id)));
-        const fresh = related.filter((item) => !knownIds.has(String(item.id)));
-        if (fresh.length) {
-          state.queue = state.queue.concat(fresh.slice(0, 1));
+        if (pick && current() === playing && upcomingIndex() === null) {
+          state.queue = state.queue.concat([pick]);
           index = state.queue.length - 1;
           emit("state", snapshot());
         }
       } catch {
-        /* sin relacionadas: se detiene al final */
+        /* sin respuesta: al terminar la canción continueRelated() reintenta */
       }
     }
     if (prep?.token !== token) return;
@@ -951,6 +997,7 @@ export function createPlayer() {
       startedKey = key;
       if (track.source !== "device") api.play(track.id).catch(() => {});
     }
+    noteRecent(track);
     syncMediaSession(track);
     updatePlaybackState();
     emit("state", snapshot());
@@ -962,6 +1009,7 @@ export function createPlayer() {
     if (!state.queue.length) return Promise.resolve();
     if (radio) stopRadio();
     const token = ++playToken;
+    clearRelatedRetry();
     finishFade();
     markInternal();
     rec.want = true;
@@ -1423,7 +1471,17 @@ export function createPlayer() {
     rec.retryTimer = 0;
     rec.recovering = false;
     finishFade();
+    const waitingMore = Boolean(relatedTimer);
+    clearRelatedRetry();
+    relatedSeq += 1;
     activeDeck().el.pause();
+    if (waitingMore || activeDeck().el.ended) {
+      state.playing = false;
+      stopViz();
+      stopTick();
+      updatePlaybackState();
+      emit("state", snapshot());
+    }
   }
 
   function toggle() {
@@ -1467,33 +1525,72 @@ export function createPlayer() {
     playIndex(Math.max(0, state.index - 1));
   }
 
-  async function continueRelated() {
+  async function continueRelated(attempt = 0) {
+    clearRelatedRetry();
     const track = current();
-    const stop = () => {
+    const seq = ++relatedSeq;
+    const token = playToken;
+    const stop = (message) => {
       rec.want = false;
       state.playing = false;
       stopViz();
       stopTick();
       updatePlaybackState();
       emit("state", snapshot());
+      if (message) emit("notice", message);
     };
-    if (!track || !state.autoplay || track.source === "device" || track.source === "local") {
+    if (!track) {
       stop();
       return;
     }
+    if (!state.autoplay || !catalogId(track)) {
+      stop(END_NOTICE);
+      return;
+    }
+    const stale = () => seq !== relatedSeq || token !== playToken || Boolean(radio) || current() !== track;
+    let pick;
     try {
-      const related = await api.related(track.id);
-      const knownIds = new Set(state.queue.map((item) => String(item.id)));
-      const fresh = related.filter((item) => !knownIds.has(String(item.id)));
-      if (!fresh.length) {
+      pick = await pickRelated(track);
+    } catch (error) {
+      if (stale()) return;
+      if (!rec.want) {
         stop();
         return;
       }
-      state.queue = state.queue.concat(fresh.slice(0, 1));
-      playIndex(state.queue.length - 1);
-    } catch {
-      stop();
+      if (error?.status === 401 || error?.status === 403 || error?.status === 404) {
+        // Sesión terminada (la atiende onSessionExpired) o canción borrada: no tiene sentido insistir.
+        stop(error.status === 404 ? END_NOTICE : "");
+        return;
+      }
+      // Red o servidor caídos: se reintenta con espera creciente en vez de parar.
+      if (attempt === 0) {
+        emit("notice", typeof navigator === "object" && navigator.onLine === false
+          ? "Sin conexión: la música seguirá cuando vuelva la red."
+          : "Buscando más música…");
+      }
+      const wait = RELATED_RETRY[Math.min(attempt, RELATED_RETRY.length - 1)];
+      relatedTimer = setTimeout(() => {
+        relatedTimer = 0;
+        if (stale()) return;
+        if (!rec.want) {
+          stop();
+          return;
+        }
+        continueRelated(attempt + 1);
+      }, wait);
+      return;
     }
+    if (stale()) return;
+    if (!rec.want) {
+      stop();
+      return;
+    }
+    if (!pick) {
+      stop(END_NOTICE);
+      return;
+    }
+    state.queue = state.queue.concat([pick]);
+    playIndex(state.queue.length - 1);
   }
 
   function seekRatio(ratio) {
@@ -1819,6 +1916,12 @@ export function createPlayer() {
     watchdog();
   });
   window.addEventListener("online", () => {
+    if (relatedTimer && rec.want && !radio) {
+      // Volvió la red mientras se esperaba la próxima canción automática: se pide ya.
+      clearRelatedRetry();
+      continueRelated(1);
+      return;
+    }
     if (radio && radio.want && !radio.playing) {
       radio.retried = false;
       startRadioEl();

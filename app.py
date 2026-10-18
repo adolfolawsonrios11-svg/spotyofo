@@ -1171,20 +1171,80 @@ def register_play():
     return jsonify(ok=True)
 
 
+# Reproducción automática: al terminar la cola se piden más canciones parecidas.
+# Primero del mismo género, después de géneros vecinos (comparten artistas) o del mismo artista,
+# y al final del resto del catálogo. «exclude» trae los ids que ya están en la cola (con tope)
+# y «seed» varía el orden, así la reproducción no se queda sin canciones nuevas.
+RELATED_DEFAULT = 20
+RELATED_MAX = 50
+RELATED_EXCLUDE_MAX = 300
+RELATED_SEED_MAX = 2**31 - 1
+
+
+def related_exclude(raw):
+    """Lista «1,2,3» de ids. Más de RELATED_EXCLUDE_MAX: se usan los últimos (los más recientes de la cola)."""
+    raw = str(raw or "").strip()
+    if not raw:
+        return []
+    parts = [part.strip() for part in raw.split(",") if part.strip()]
+    if len(parts) > RELATED_EXCLUDE_MAX * 4:
+        raise ValueError("exclude")
+    ids = []
+    for part in parts:
+        if not part.isdigit() or len(part) > 10:
+            raise ValueError("exclude")
+        ids.append(int(part))
+    seen, out = set(), []
+    for value in reversed(ids):
+        if value > 0 and value not in seen:
+            seen.add(value)
+            out.append(value)
+        if len(out) >= RELATED_EXCLUDE_MAX:
+            break
+    return out
+
+
 @app.get("/api/tracks/<int:track_id>/related")
 def related(track_id):
+    try:
+        limit = int_arg("limit", RELATED_DEFAULT, 1, RELATED_MAX)
+        seed = int_arg("seed", secrets.randbelow(RELATED_SEED_MAX), 0, RELATED_SEED_MAX)
+        exclude = related_exclude(request.args.get("exclude"))
+    except ValueError:
+        return fail("Parámetros no válidos.", 400)
     with get_db().cursor() as cur:
-        cur.execute("SELECT genre FROM tracks WHERE id = %s", (track_id,))
+        cur.execute("SELECT genre, artist_id FROM tracks WHERE id = %s", (track_id,))
         row = cur.fetchone()
     if not row:
         return fail("Pista no encontrada.", 404)
-    items = tracks_where(
-        "WHERE t.genre = %s AND t.id <> %s",
-        (row["genre"], track_id),
-        order="t.plays DESC, t.id",
-        limit=8,
-    )
-    return jsonify(items)
+    genre, artist_id = row["genre"], row["artist_id"]
+    tiers = [
+        ("t.genre <=> %s", (genre,)),
+        (
+            "NOT (t.genre <=> %s) AND (t.artist_id = %s OR t.genre IN ("
+            " SELECT DISTINCT n.genre FROM tracks n WHERE n.genre IS NOT NULL AND n.artist_id IN ("
+            "  SELECT s.artist_id FROM tracks s WHERE s.genre <=> %s)))",
+            (genre, artist_id, genre),
+        ),
+        ("1 = 1", ()),
+    ]
+    picked, taken = [], {track_id, *exclude}
+    for cond, params in tiers:
+        missing = limit - len(picked)
+        if missing <= 0:
+            break
+        marks = ", ".join(["%s"] * len(taken))
+        items = tracks_where(
+            f"WHERE {cond} AND t.id NOT IN ({marks})",
+            (*params, *sorted(taken)),
+            order=f"RAND({int(seed)}), t.id",
+            limit=missing,
+        )
+        for item in items:
+            if item["id"] not in taken:
+                taken.add(item["id"])
+                picked.append(item)
+    return jsonify(picked)
 
 
 @app.get("/api/genres")
