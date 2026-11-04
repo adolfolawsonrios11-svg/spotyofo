@@ -1,7 +1,7 @@
-import { api, onSessionExpired, setCsrf } from "./api.js?v=20261018a";
-import { EQ_FREQS, EQ_LABELS, EQ_PRESETS } from "./player.js?v=20261018a";
-import { createRadio } from "./radio.js?v=20261018a";
-import { canPickDirectory, grantDirectory, listDirectory, pickDirectory, rememberFiles, rootStatus, setLikedMany } from "./localdisk.js?v=20261018a";
+import { api, onSessionExpired, setCsrf } from "./api.js?v=20261104a";
+import { EQ_FREQS, EQ_LABELS, EQ_PRESETS } from "./player.js?v=20261104a";
+import { createRadio } from "./radio.js?v=20261104a";
+import { canPickDirectory, grantDirectory, listDirectory, pickDirectory, rememberFiles, rootStatus, setLikedMany } from "./localdisk.js?v=20261104a";
 
 const known = new Map();
 const UPLOAD_EXT = [".mp3", ".m4a", ".mp4", ".aac", ".flac", ".ogg", ".oga", ".opus", ".wav"];
@@ -51,6 +51,7 @@ export function createUI(player) {
   let orderPlaylist = null;
   let drawerMode = null;
   let toastTimer = 0;
+  let stickyToast = null; // aviso que espera una acción (sesión vencida, «Toca para continuar»)
   let searchTimer = 0;
   let genreState = null; // vista de género: { item, tracks, sort, filter }
   let genresOrder = "count";
@@ -105,10 +106,21 @@ export function createUI(player) {
   function hideToast() {
     clearTimeout(toastTimer);
     toast.hidden = true;
+    // Un aviso breve no borra uno que espera acción: este vuelve al terminar el breve.
+    if (stickyToast && !toast.classList.contains("sticky")) showToast(stickyToast.message, stickyToast.actions, stickyToast);
+  }
+
+  function clearSticky(kind) {
+    if (!stickyToast || (kind && stickyToast.kind !== kind)) return;
+    stickyToast = null;
+    if (toast.classList.contains("sticky")) {
+      toast.classList.remove("sticky");
+      hideToast();
+    }
   }
 
   // Aviso breve. Con acciones («Ver», «Deshacer») dura más y se pausa al pasar el mouse o enfocarlo.
-  function showToast(message, actions = []) {
+  function showToast(message, actions = [], options = {}) {
     clearTimeout(toastTimer);
     const text = document.createElement("span");
     text.textContent = message;
@@ -119,6 +131,10 @@ export function createUI(player) {
       button.className = "toast-act";
       button.textContent = action.label;
       button.addEventListener("click", () => {
+        if (options.sticky) {
+          stickyToast = null;
+          toast.classList.remove("sticky");
+        }
         hideToast();
         Promise.resolve()
           .then(action.run)
@@ -128,7 +144,9 @@ export function createUI(player) {
     });
     toast.classList.toggle("has-actions", actions.length > 0);
     toast.hidden = false;
-    toastTimer = setTimeout(hideToast, actions.length ? 6000 : 2400);
+    toast.classList.toggle("sticky", Boolean(options.sticky));
+    if (options.sticky) stickyToast = { message, actions, sticky: true, kind: options.kind || "" };
+    toastTimer = options.sticky ? 0 : setTimeout(hideToast, actions.length ? 6000 : 2400);
   }
 
   function announce(message) {
@@ -3329,10 +3347,10 @@ export function createUI(player) {
     toast.addEventListener("pointerenter", () => clearTimeout(toastTimer));
     toast.addEventListener("focusin", () => clearTimeout(toastTimer));
     toast.addEventListener("pointerleave", () => {
-      if (!toast.hidden) toastTimer = setTimeout(hideToast, 3000);
+      if (!toast.hidden && !toast.classList.contains("sticky")) toastTimer = setTimeout(hideToast, 3000);
     });
     toast.addEventListener("focusout", () => {
-      if (!toast.hidden) toastTimer = setTimeout(hideToast, 3000);
+      if (!toast.hidden && !toast.classList.contains("sticky")) toastTimer = setTimeout(hideToast, 3000);
     });
     document.getElementById("modal-form").addEventListener("submit", async (event) => {
       event.preventDefault();
@@ -3535,7 +3553,23 @@ export function createUI(player) {
     paintRange(volume);
     paintRange(seek);
     syncPlayer(snap);
-    onSessionExpired((needs) => location.assign(needs === "setup" ? "/setup" : "/login"));
+    // Sesión vencida: si hay música sonando (o en espera) no se corta con un salto al login; se avisa
+    // y la persona decide cuándo volver a entrar. Sin música, se va al login como siempre.
+    const loginTarget = (needs) => (needs === "setup" ? "/setup" : "/login");
+    const showSessionLost = () => {
+      showToast("Tu sesión terminó.", [{ label: "Volver a entrar", run: () => location.assign("/login") }], { sticky: true, kind: "session" });
+    };
+    onSessionExpired((needs) => {
+      if (needs !== "setup" && player.isActive()) showSessionLost();
+      else location.assign(loginTarget(needs));
+    });
+    player.on("session", showSessionLost);
+    player.on("blocked", () => {
+      showToast("La música quedó en espera.", [{ label: "Toca para continuar", run: () => player.resume() }], { sticky: true, kind: "blocked" });
+    });
+    player.on("state", (snap) => {
+      if (snap.playing) clearSticky("blocked");
+    });
     userBtn.addEventListener("click", () => (userMenu.hidden ? openUserMenu() : closeUserMenu(true)));
     userMenu.addEventListener("keydown", onUserMenuKey);
     const installed = window.matchMedia("(display-mode: standalone)").matches || window.navigator.standalone === true;

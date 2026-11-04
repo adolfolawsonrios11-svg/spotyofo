@@ -102,7 +102,15 @@ async function uploadCover(albumId, file) {
   return data;
 }
 
+// Estado de la sesión sin efectos (no redirige ni avisa): 200 activa, 401 vencida, 0 sin red.
+function sessionStatus() {
+  return fetch("/api/me", { credentials: "same-origin", cache: "no-store", headers: { Accept: "application/json", "X-Requested-With": "SpotyOFO" } })
+    .then((response) => response.status)
+    .catch(() => 0);
+}
+
 export const api = {
+  sessionStatus,
   home: () => request("/api/home"),
   playlists: () => request("/api/playlists"),
   playlist: (id) => request(`/api/playlists/${id}`),

@@ -1,4 +1,4 @@
-import { api } from "./api.js?v=20261018a";
+import { api } from "./api.js?v=20261104a";
 
 export const EQ_FREQS = [31, 62, 125, 250, 500, 1000, 2000, 4000, 8000, 16000];
 export const EQ_LABELS = ["31", "62", "125", "250", "500", "1k", "2k", "4k", "8k", "16k"];
@@ -228,7 +228,36 @@ export function createPlayer() {
     retryTimer: 0,
     recovering: false,
     retryFrom: 0,
+    held: false, // «en espera»: el sistema pausó con la página oculta/congelada; se retoma al volver
+    userPauseAt: 0, // última pausa pedida por la persona (botones, MediaSession, auriculares/teclas)
+    probing: false, // revisando si un error de audio es en realidad la sesión vencida (401)
   };
+  // Pausas del sistema: solo es «de la persona» la que pasa por pause()/pauseRadio(). Una pausa
+  // sin ese origen con la página oculta, congelada o en transición deja la música en espera.
+  // Una interrupción de audio (llamada, Safari «interrupted») o una pausa con la página visible
+  // se respetan: no se fuerza el play.
+  const TRANSITION_MS = 1500;
+  const life = { frozen: false, changedAt: 0, interruptedAt: 0, visiblePauseAt: 0 };
+  const markLife = () => {
+    life.changedAt = Date.now();
+  };
+  function pageAway() {
+    return document.hidden || life.frozen || Date.now() - life.changedAt < TRANSITION_MS;
+  }
+  function audioInterrupted() {
+    if (ctx && ctx.state === "interrupted") return true;
+    const session = typeof navigator === "object" ? navigator.audioSession : null;
+    if (session && session.state === "interrupted") return true;
+    return Date.now() - life.interruptedAt < 3000;
+  }
+  function userPausedRecently() {
+    return Date.now() - rec.userPauseAt < TRANSITION_MS;
+  }
+  // Qué hacer con una pausa que no pedimos: "hold" (en espera) o "respect" (queda pausada).
+  function classifyExternalPause() {
+    if (userPausedRecently() || audioInterrupted()) return "respect";
+    return pageAway() ? "hold" : "respect";
+  }
   const markInternal = () => {
     rec.internalAt = Date.now();
   };
@@ -263,6 +292,7 @@ export function createPlayer() {
     el.addEventListener("play", () => {
       if (deck !== activeDeck() || deck.unlocking) return;
       rec.want = true; // también cuando se reanuda desde la pantalla de bloqueo o los auriculares
+      rec.held = false;
       state.playing = true;
       updatePlaybackState();
       emit("state", snapshot());
@@ -271,9 +301,23 @@ export function createPlayer() {
     });
     el.addEventListener("pause", () => {
       if (deck !== activeDeck() || deck.unlocking) return;
-      // Pausa que no pedimos nosotros (sistema, auriculares, llamada): se respeta, salvo que venga
-      // de un error, del final de la pista o de un cambio interno de archivo.
-      if (!el.ended && !el.error && !rec.recovering && Date.now() - rec.internalAt > 1500) rec.want = false;
+      // Pausa que no pedimos nosotros: si la página está oculta, congelada o cambiando de estado,
+      // queda «en espera» (se retoma al volver); si fue una interrupción (llamada, audio focus) o con
+      // la página visible, se respeta. Los errores, el final de pista y los cambios internos no cuentan.
+      const internal = Date.now() - rec.internalAt <= 1500;
+      if (!el.ended && !el.error && !rec.recovering && rec.want && internal) {
+        // Justo después de un cambio nuestro (p. ej. empezó la siguiente canción) con la página fuera:
+        // si el sistema la pausa, también queda en espera.
+        if (classifyExternalPause() === "hold") rec.held = true;
+      } else if (!el.ended && !el.error && !rec.recovering && rec.want) {
+        if (classifyExternalPause() === "hold") {
+          rec.held = true;
+        } else {
+          rec.want = false;
+          rec.held = false;
+          life.visiblePauseAt = Date.now();
+        }
+      }
       if (rec.recovering || (rec.want && (el.error || el.ended))) return;
       state.playing = false;
       updatePlaybackState();
@@ -424,6 +468,7 @@ export function createPlayer() {
     // Si el sistema suspende o interrumpe el audio (llamada, pantalla apagada), se reanuda en
     // cuanto se pueda; si falla en segundo plano, se reintenta al volver o con el siguiente gesto.
     ctx.addEventListener?.("statechange", () => {
+      if (ctx.state === "interrupted") life.interruptedAt = Date.now();
       if (ctx.state !== "running" && rec.want) resumeContext();
     });
     applyEqNodes();
@@ -495,11 +540,35 @@ export function createPlayer() {
   // Espera entre reintentos: cortes cortos se retoman en 1 s; cortes largos, hasta ~1 minuto.
   const RETRY_DELAYS = [800, 2500, 5000, 10000, 20000, 30000];
 
-  function recover(reason) {
+  // La sesión terminó mientras sonaba: se detiene sin marcar la canción como dañada y se avisa
+  // (la interfaz muestra «Volver a entrar» en vez de llevar al login a mitad de la canción).
+  function sessionLost(status = 401) {
+    clearStall();
+    if (rec.retryTimer) clearTimeout(rec.retryTimer);
+    rec.retryTimer = 0;
+    rec.recovering = false;
+    rec.held = false;
+    rec.want = false;
+    rec.retries = 0;
+    markInternal();
+    try {
+      activeDeck().el.pause();
+    } catch {
+      /* nada que pausar */
+    }
+    state.playing = false;
+    stopViz();
+    stopTick();
+    updatePlaybackState();
+    emit("state", snapshot());
+    emit("session", { status, track: current() });
+  }
+
+  function recover(reason, probed = false) {
     const deck = activeDeck();
     const track = current();
     if (!track || !deck.loadedUrl) return;
-    if (rec.retryTimer) return;
+    if (rec.retryTimer || rec.probing) return;
     clearStall();
     const position = rec.lastTime || deck.el.currentTime || 0;
     // Sin red: no se gastan reintentos; se retoma apenas vuelva la conexión (evento «online»).
@@ -512,6 +581,28 @@ export function createPlayer() {
         if (rec.want && activeDeck() === deck && current() === track) recover(reason);
         else rec.recovering = false;
       }, 15000);
+      return;
+    }
+    // Antes de gastar reintentos: ¿la sesión venció? Un audio que falla por 401 no es una canción dañada.
+    if (!probed) {
+      rec.probing = true;
+      rec.recovering = true;
+      api.sessionStatus().then((status) => {
+        rec.probing = false;
+        if (activeDeck() !== deck || current() !== track) {
+          rec.recovering = false;
+          return;
+        }
+        if (status === 401) {
+          sessionLost(status);
+          return;
+        }
+        if (!rec.want) {
+          rec.recovering = false;
+          return;
+        }
+        recover(reason, true);
+      });
       return;
     }
     // Archivo dañado (no se puede decodificar): no tiene sentido insistir mucho.
@@ -569,6 +660,7 @@ export function createPlayer() {
     el.play().catch((error) => {
       if (error.name === "NotAllowedError") {
         rec.recovering = false;
+        if (holdBlocked()) return;
         rec.want = false;
         state.playing = false;
         emit("error", error);
@@ -1013,6 +1105,7 @@ export function createPlayer() {
     finishFade();
     markInternal();
     rec.want = true;
+    rec.held = false;
     rec.retries = 0;
     rec.lastTime = 0;
     rec.lastProgressAt = Date.now();
@@ -1055,6 +1148,7 @@ export function createPlayer() {
         if (token !== playToken || error.name === "AbortError") return;
         if (error.name === "NotAllowedError" || error.name === "NotSupportedError") {
           if (error.name === "NotSupportedError" && deck.el.error) return; // lo atiende recover()
+          if (error.name === "NotAllowedError" && holdBlocked()) return;
           rec.want = false;
           state.playing = false;
           emit("error", error);
@@ -1165,7 +1259,7 @@ export function createPlayer() {
     clearRadioTimer();
     const token = radio?.token;
     radioTimer = setTimeout(() => {
-      if (radio && radio.token === token && radio.want && !radio.playing) radioFailed("timeout");
+      if (radio && radio.token === token && radio.want && !radio.held && !radio.playing) radioFailed("timeout");
     }, RADIO_START_TIMEOUT);
   }
 
@@ -1257,8 +1351,15 @@ export function createPlayer() {
       if (!radio || radio.token !== token || error.name === "AbortError") return;
       if (error.name === "NotAllowedError") {
         clearRadioTimer();
-        radio.want = false;
         radio.status = "paused";
+        if (radio.held || pageAway()) {
+          // Venía sonando: queda en espera hasta volver o hasta que la persona toque.
+          radio.held = true;
+          emitRadio();
+          if (!document.hidden) emit("blocked", { radio: true });
+          return;
+        }
+        radio.want = false;
         emit("error", error);
         emitRadio();
         return;
@@ -1271,6 +1372,7 @@ export function createPlayer() {
     if (!radio) return;
     clearRadioTimer();
     radio.playing = true;
+    radio.held = false;
     radio.status = "live";
     radio.retried = false;
     if (!radio.clicked) {
@@ -1281,16 +1383,23 @@ export function createPlayer() {
   });
   radioEl.addEventListener("pause", () => {
     if (!radio || !radio.playing) return;
-    // Pausa desde el sistema (auriculares, llamada, pantalla bloqueada): se respeta.
+    // Pausa del sistema: con la página oculta/congelada queda en espera (se vuelve a abrir el
+    // stream al volver); una interrupción (llamada, auriculares) o con la página visible se respeta.
     radio.playing = false;
-    radio.want = false;
+    if (radio.want && classifyExternalPause() === "hold") {
+      radio.held = true;
+    } else {
+      radio.want = false;
+      radio.held = false;
+      life.visiblePauseAt = Date.now();
+    }
     radio.status = "paused";
     radio.pausedAt = Date.now();
     clearRadioTimer();
     emitRadio();
   });
   ["waiting", "stalled"].forEach((type) => radioEl.addEventListener(type, () => {
-    if (!radio || !radio.want) return;
+    if (!radio || !radio.want || radio.held) return;
     if (radio.status === "live") {
       radio.status = "connecting";
       emitRadio();
@@ -1302,7 +1411,7 @@ export function createPlayer() {
     if (radio && radio.want) radioFailed("ended");
   });
   radioEl.addEventListener("error", () => {
-    if (!radio || !radio.want || !radioEl.getAttribute("src")) return;
+    if (!radio || !radio.want || radio.held || !radioEl.getAttribute("src")) return;
     const code = radioEl.error?.code;
     radioFailed(code === 4 ? "unsupported" : "error");
   });
@@ -1328,7 +1437,7 @@ export function createPlayer() {
     stopViz();
     stopTick();
     const same = radio && radio.station.stationuuid === station.stationuuid;
-    radio = { station, status: "connecting", playing: false, want: true, token: ++radioToken, retried: false, pausedAt: 0, clicked: same ? radio.clicked : false };
+    radio = { station, status: "connecting", playing: false, want: true, held: false, token: ++radioToken, retried: false, pausedAt: 0, clicked: same ? radio.clicked : false };
     syncRadioSession(station);
     return startRadioEl();
   }
@@ -1336,6 +1445,8 @@ export function createPlayer() {
   function pauseRadio() {
     if (!radio) return;
     clearRadioTimer();
+    rec.userPauseAt = Date.now();
+    radio.held = false;
     radio.want = false;
     radio.playing = false;
     radio.status = "paused";
@@ -1438,6 +1549,7 @@ export function createPlayer() {
     ensureGraph();
     resumeContext();
     rec.want = true;
+    rec.held = false;
     rec.lastProgressAt = Date.now();
     if (!deck.loadedUrl) {
       playIndex(state.index);
@@ -1452,6 +1564,7 @@ export function createPlayer() {
     deck.el.play().catch((error) => {
       if (error.name === "AbortError") return;
       if (error.name === "NotAllowedError") {
+        if (holdBlocked()) return;
         rec.want = false;
         emit("error", error);
         return;
@@ -1460,12 +1573,26 @@ export function createPlayer() {
     });
   }
 
+  // El navegador bloqueó el play() sin un toque: si veníamos sonando (en espera o la página fuera
+  // de vista) no se pierde la intención; se pide «Toca para continuar».
+  function holdBlocked() {
+    if (!rec.want || !(rec.held || pageAway())) return false;
+    rec.held = true;
+    state.playing = false;
+    updatePlaybackState();
+    emit("state", snapshot());
+    if (!document.hidden) emit("blocked", { radio: false });
+    return true;
+  }
+
   function pause() {
     if (radio) {
       pauseRadio();
       return;
     }
     rec.want = false;
+    rec.held = false;
+    rec.userPauseAt = Date.now();
     clearStall();
     if (rec.retryTimer) clearTimeout(rec.retryTimer);
     rec.retryTimer = 0;
@@ -1898,24 +2025,120 @@ export function createPlayer() {
     if (rec.want || state.playing) resumeContext();
   };
   ["pointerdown", "touchend", "keydown"].forEach((type) => document.addEventListener(type, wake, { passive: true }));
+  // Tras descongelar la página, Chrome a veces deja el audio «sonando» sin avanzar (un seek no basta):
+  // si en 2,5 s no avanzó, se recupera como un corte normal (recarga en el mismo punto).
+  let nudgeTimer = 0;
+  function nudgeIfStuck() {
+    if (radio || nudgeTimer || !rec.want) return;
+    const el = activeDeck().el;
+    if (el.paused) return;
+    const t0 = el.currentTime;
+    const still = () => rec.want && !radio && el === activeDeck().el && !el.paused && !el.ended && el.currentTime <= t0 + 0.2;
+    nudgeTimer = setTimeout(() => {
+      nudgeTimer = 0;
+      if (still() && !document.hidden && !rec.retryTimer) recover("stall");
+    }, 2500);
+  }
+
+  // Retoma lo que quedó «en espera» por el sistema. Si el navegador exige un toque, avisa.
+  function resumeHeld() {
+    if (radio) {
+      if (!radio.held || !radio.want || radio.playing) return;
+      radio.token = ++radioToken;
+      radio.retried = false;
+      startRadioEl();
+      return;
+    }
+    if (!rec.held || !rec.want || !current()) return;
+    const deck = activeDeck();
+    if (!deck.loadedUrl || deck.el.error) {
+      rec.held = false;
+      if (deck.loadedUrl) {
+        rec.retries = 0;
+        recover("error");
+      } else {
+        playIndex(state.index);
+      }
+      return;
+    }
+    if (!deck.el.paused) {
+      rec.held = false;
+      return;
+    }
+    ensureGraph();
+    resumeContext();
+    rec.lastProgressAt = Date.now();
+    deck.el.play().then(() => {
+      rec.held = false;
+      nudgeIfStuck();
+    }).catch((error) => {
+      if (error.name === "AbortError") return;
+      if (error.name === "NotAllowedError") {
+        if (!document.hidden) emit("blocked", { radio: false });
+        return;
+      }
+      rec.held = false;
+      recover("error");
+    });
+  }
+
+  // Al volver: si quedó en espera, se retoma; si el sistema pausó con la página visible, no.
+  const onBack = () => {
+    wake();
+    resumeHeld();
+    watchdog();
+    nudgeIfStuck();
+  };
   document.addEventListener("visibilitychange", () => {
+    markLife();
     wake();
     if (!document.hidden) {
+      resumeHeld();
       watchdog();
       if (state.playing) startViz();
     } else {
+      // Pausa del sistema justo antes de ocultarse (sin interrupción ni pausa nuestra): en espera.
+      if (Date.now() - life.visiblePauseAt < TRANSITION_MS && !userPausedRecently() && !audioInterrupted()) {
+        if (radio && !radio.want && !radio.playing && radio.status === "paused") {
+          radio.want = true;
+          radio.held = true;
+        } else if (!radio && current() && activeDeck().el.paused && !activeDeck().el.ended) {
+          rec.want = true;
+          rec.held = true;
+        }
+      }
       stopVizLoopOnly();
     }
   });
+  document.addEventListener("freeze", () => {
+    life.frozen = true;
+    markLife();
+  });
+  window.addEventListener("pagehide", markLife);
   window.addEventListener("pageshow", () => {
-    wake();
-    watchdog();
+    life.frozen = false;
+    markLife();
+    onBack();
   });
   document.addEventListener("resume", () => {
-    wake();
-    watchdog();
+    life.frozen = false;
+    markLife();
+    onBack();
   });
+  window.addEventListener("focus", () => {
+    if (!document.hidden) onBack();
+  });
+  // Safari: la sesión de audio avisa las interrupciones (llamadas, alarmas, Siri).
+  if (typeof navigator === "object" && navigator.audioSession && typeof navigator.audioSession.addEventListener === "function") {
+    navigator.audioSession.addEventListener("statechange", () => {
+      if (navigator.audioSession.state === "interrupted") life.interruptedAt = Date.now();
+    });
+  }
   window.addEventListener("online", () => {
+    if (rec.held || radio?.held) {
+      resumeHeld();
+      return;
+    }
     if (relatedTimer && rec.want && !radio) {
       // Volvió la red mientras se esperaba la próxima canción automática: se pide ya.
       clearRelatedRetry();
@@ -1950,6 +2173,9 @@ export function createPlayer() {
   return {
     on,
     current: () => (radio ? null : current()),
+    resume,
+    // ¿Hay música sonando o en espera? (para no llevar al login a mitad de una canción)
+    isActive: () => Boolean(radio ? radio.want || radio.playing : rec.want || state.playing || rec.held),
     snapshot,
     playRadio,
     pauseRadio,
@@ -1997,6 +2223,8 @@ export function createPlayer() {
       return {
         engine,
         want: rec.want,
+        held: rec.held,
+        frozen: life.frozen,
         playing: state.playing,
         paused: deck.el.paused,
         ctx: ctx ? ctx.state : null,
@@ -2010,7 +2238,7 @@ export function createPlayer() {
       };
     },
     radioHealth() {
-      return { status: radio?.status || null, paused: radioEl.paused, readyState: radioEl.readyState, time: radioEl.currentTime, src: radioEl.currentSrc, error: radioEl.error?.code || 0 };
+      return { status: radio?.status || null, want: Boolean(radio?.want), held: Boolean(radio?.held), paused: radioEl.paused, readyState: radioEl.readyState, time: radioEl.currentTime, src: radioEl.currentSrc, error: radioEl.error?.code || 0 };
     },
     position() {
       if (radio) return { current: radioEl.currentTime || 0, duration: 0 };

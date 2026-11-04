@@ -262,7 +262,7 @@ try:
     html = body.decode("utf-8", "replace")
     m = re.search(r'/static/js/main\.js\?v=([\w.-]+)', html)
     _, _, mj = a.raw("GET", f"/static/js/main.js?v={m.group(1) if m else ''}")
-    check("main.js importa la versión nueva de los módulos", b"?v=20261018a" in mj and b"?v=20261017a" not in mj, mj[:120])
+    check("main.js importa la versión nueva de los módulos", b"?v=20261104a" in mj and b"?v=20261018a" not in mj, mj[:120])
     _, _, pj = a.raw("GET", "/static/js/player.js")
     pj = pj.decode("utf-8", "replace")
     check("player.js: sin fin, reintentos 1-3-10 s y aviso de fin", "pickRelated" in pj and "[1000, 3000, 10000]" in pj and "Se terminó la lista." in pj and "RELATED_NO_REPEAT = [20, 5, 1]" in pj, "")
