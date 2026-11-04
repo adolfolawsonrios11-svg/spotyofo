@@ -1957,3 +1957,54 @@ body.is-radio .now-transport { display: flex; justify-content: center; }
   body.is-radio .player-main { display: block; }
   body.is-radio .mini-progress i { background: #ff5c5c; }
 }
+
+/* ---- Mis canciones / offline ---- */
+.offline-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 16px;
+  align-items: center;
+  justify-content: space-between;
+  margin: 8px 0 20px;
+  padding: 14px 16px;
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--elev) 88%, #2ef2c0 12%);
+  border: 1px solid color-mix(in srgb, var(--line) 70%, #2ef2c0 30%);
+}
+.offline-bar-main {
+  display: grid;
+  gap: 4px;
+  min-width: min(100%, 240px);
+  flex: 1 1 220px;
+}
+.offline-bar-main strong { font-size: 0.95rem; }
+.offline-bar-main span { color: var(--muted); font-size: 0.88rem; line-height: 1.35; }
+.offline-bar-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+.offline-saver {
+  display: inline-flex;
+  gap: 8px;
+  align-items: center;
+  font-size: 0.88rem;
+  color: var(--text);
+  cursor: pointer;
+  user-select: none;
+}
+.offline-saver input { width: 16px; height: 16px; accent-color: var(--aqua); }
+.offline-btn { font-weight: 700; letter-spacing: 0.02em; }
+.offline-btn.is-on { color: var(--aqua); }
+.track.is-offline .track-title::after {
+  content: " · sin internet";
+  color: var(--muted);
+  font-weight: 500;
+  font-size: 0.78em;
+}
+@media (max-width: 720px) {
+  .offline-bar { padding: 12px; }
+  .offline-bar-actions { width: 100%; }
+  .offline-bar-actions .btn { flex: 1 1 auto; }
+}

@@ -1,7 +1,17 @@
-import { api, onSessionExpired, setCsrf } from "./api.js?v=20261104a";
-import { EQ_FREQS, EQ_LABELS, EQ_PRESETS } from "./player.js?v=20261104a";
-import { createRadio } from "./radio.js?v=20261104a";
-import { canPickDirectory, grantDirectory, listDirectory, pickDirectory, rememberFiles, rootStatus, setLikedMany } from "./localdisk.js?v=20261104a";
+import { api, onSessionExpired, setCsrf } from "./api.js?v=20261104b";
+import { EQ_FREQS, EQ_LABELS, EQ_PRESETS } from "./player.js?v=20261104b";
+import { createRadio } from "./radio.js?v=20261104b";
+import { canPickDirectory, grantDirectory, listDirectory, pickDirectory, rememberFiles, rootStatus, setLikedMany } from "./localdisk.js?v=20261104b";
+import {
+  clearAll as clearOfflineDownloads,
+  dataSaverOn,
+  downloadTrack,
+  formatBytes,
+  mergeOfflineFlags,
+  removeDownload,
+  setDataSaver,
+  storageSummary,
+} from "./offline.js?v=20261104b";
 
 const known = new Map();
 const UPLOAD_EXT = [".mp3", ".m4a", ".mp4", ".aac", ".flac", ".ogg", ".oga", ".opus", ".wav"];
@@ -365,7 +375,7 @@ export function createUI(player) {
       : `<a href="#/artist/${track.artist_id}">${esc(track.artist)}</a>`;
     const like = `<button type="button" class="icon-btn heart ${track.liked ? "is-on" : ""}" data-action="like" data-like="${id}" aria-label="Me gusta">${track.liked ? "♥" : "♡"}</button>`;
     const rowClass = device ? "device" : options.album ? "" : "no-album";
-    return `<div class="track ${rowClass}" data-id="${id}" data-song="${esc(track.song_key || "")}" data-playlist="${options.playlistId || ""}">
+    return `<div class="track ${rowClass}${track.offline ? " is-offline" : ""}" data-id="${id}" data-song="${esc(track.song_key || "")}" data-playlist="${options.playlistId || ""}">
       <button type="button" class="track-index" data-action="play-track" data-id="${id}" data-context="${options.context || ""}" data-context-id="${esc(options.contextId || "")}" data-index="${index}" aria-label="Reproducir">
         <span class="num">${index + 1}</span>
         <span class="hover-play">▶</span>
@@ -376,6 +386,11 @@ export function createUI(player) {
         ${artist}
       </div>
       ${album}
+      ${options.offline
+        ? (track.offline
+          ? `<button type="button" class="icon-btn offline-btn is-on" data-action="offline-remove" data-id="${id}" aria-label="Quitar descarga" title="Descargada (${formatBytes(track.offline_size || 0)})">↓</button>`
+          : `<button type="button" class="icon-btn offline-btn" data-action="offline-download" data-id="${id}" aria-label="Descargar para sin internet" title="${track.lite_url ? "Versión liviana" : "Original"}">↓</button>`)
+        : ""}
       ${like}
       <span class="time">${track.source === "local" && !track.duration_ms ? "—" : fmt(track.duration_ms)}</span>
       <button type="button" class="icon-btn more" data-action="menu" data-id="${id}" data-playlist="${options.playlistId || ""}" aria-label="Más opciones para ${esc(track.title)}" aria-haspopup="menu">···</button>
@@ -478,9 +493,9 @@ export function createUI(player) {
     const editorial = lists.filter((item) => item.editorial);
     return `
       <h1 class="hello">Biblioteca</h1>
-      <p class="lead">${isDemo() ? "Esta es una cuenta demo compartida: lo que hagas aquí lo ven otros visitantes y se reinicia cada noche." : "Tus Me gusta y tus listas son solo tuyos: nadie más los ve."}</p>
+      <p class="lead">${isDemo() ? "Esta es una cuenta demo compartida: lo que hagas aquí lo ven otros visitantes y se reinicia cada noche." : "Tus Me gusta (Mis canciones) y tus listas son solo tuyos: nadie más los ve."}</p>
       <div class="library-grid">
-        <a class="lib-card likes" href="#/likes"><strong>Me gusta</strong><span>${likes.length} ${likes.length === 1 ? "canción" : "canciones"}</span></a>
+        <a class="lib-card likes" href="#/likes"><strong>Me gusta</strong><span>Mis canciones · ${likes.length} ${likes.length === 1 ? "canción" : "canciones"}</span></a>
         ${genreCount ? `<a class="lib-card genres" href="#/genres"><strong>Géneros</strong><span>${plural(genreCount, "género", "géneros")}</span></a>` : ""}
         <button type="button" class="lib-card create" data-action="create-playlist"><strong>Nueva lista</strong><span>Armar una selección</span></button>
       </div>
@@ -492,12 +507,32 @@ export function createUI(player) {
   async function renderLikes() {
     const tracks = await api.likes();
     remember(tracks);
+    await mergeOfflineFlags(tracks);
     const duration = tracks.reduce((sum, track) => sum + track.duration_ms, 0);
+    const summary = await storageSummary();
+    const canOffline = Boolean(me && me.offline_downloads);
+    const saver = dataSaverOn();
+    const offlineBar = `
+      <section class="offline-bar" aria-label="Descargas sin internet">
+        <div class="offline-bar-main">
+          <strong>Sin internet</strong>
+          <span>${canOffline
+            ? (summary.count
+              ? `${summary.count} descargada${summary.count === 1 ? "" : "s"} · ${formatBytes(summary.bytes)} en este dispositivo`
+              : "Descarga canciones de Me gusta para escucharlas sin conexión.")
+            : "La cuenta demo puede escuchar, pero no descargar para usar sin internet."}</span>
+        </div>
+        <div class="offline-bar-actions">
+          <label class="offline-saver"><input type="checkbox" data-action="toggle-data-saver" ${saver ? "checked" : ""} ${canOffline ? "" : "disabled"}> Ahorro de datos</label>
+          ${canOffline && tracks.length ? `<button type="button" class="btn ghost" data-action="download-likes">Descargar todas</button>` : ""}
+          ${canOffline && summary.count ? `<button type="button" class="btn ghost danger" data-action="clear-offline">Quitar descargas</button>` : ""}
+        </div>
+      </section>`;
     return `
       <header class="sheet likes-sheet">
         <div class="likes-art">♥</div>
         <div>
-          <p class="kicker">Playlist</p>
+          <p class="kicker">Mis canciones</p>
           <h1>Me gusta</h1>
           <p class="sheet-sub">${tracks.length} canciones · ${fmt(duration)}</p>
           ${tracks.length ? `<div class="sheet-actions">
@@ -510,7 +545,8 @@ export function createUI(player) {
           </div>` : ""}
         </div>
       </header>
-      ${tracks.length ? `<div class="tracklist">${tracks.map((track, index) => trackRow(track, index, { album: true, context: "likes", contextId: "likes" })).join("")}</div>` : `<p class="empty">Todavía no marcaste canciones. El corazón de cada fila las guarda aquí.</p>`}
+      ${offlineBar}
+      ${tracks.length ? `<div class="tracklist">${tracks.map((track, index) => trackRow(track, index, { album: true, context: "likes", contextId: "likes", offline: canOffline })).join("")}</div>` : `<p class="empty">Todavía no marcaste canciones. El corazón de cada fila las guarda aquí, solo para ti.</p>`}
     `;
   }
 
@@ -1406,6 +1442,7 @@ export function createUI(player) {
         const keys = await caches.keys();
         await Promise.all(keys.map((key) => caches.delete(key)));
       }
+      await clearOfflineDownloads().catch(() => {});
     } catch {
       /* sin caché disponible */
     }
@@ -2923,6 +2960,66 @@ export function createUI(player) {
     }
     if (action === "select-start" && canEdit()) {
       startSelect(null);
+      return;
+    }
+
+    if (action === "toggle-data-saver") {
+      const input = target.matches("input[type='checkbox']") ? target : target.closest("label")?.querySelector("input[type='checkbox']");
+      if (!input) return;
+      setDataSaver(input.checked);
+      showToast(input.checked ? "Ahorro de datos: se usa la versión liviana si existe." : "Ahorro de datos desactivado.");
+      return;
+    }
+    if (action === "offline-download") {
+      if (!(me && me.offline_downloads)) {
+        showToast("La cuenta demo no puede descargar para sin internet.");
+        return;
+      }
+      const track = known.get(Number(target.dataset.id)) || known.get(target.dataset.id);
+      if (!track) return;
+      target.disabled = true;
+      try {
+        await downloadTrack(track, { demo: isDemo() });
+        showToast(`Descargada: ${track.title}`);
+        if (parts()[0] === "likes") await show(renderLikes);
+      } catch (error) {
+        showToast(error.message || "No se pudo descargar.");
+      } finally {
+        target.disabled = false;
+      }
+      return;
+    }
+    if (action === "offline-remove") {
+      await removeDownload(target.dataset.id);
+      showToast("Descarga quitada de este dispositivo.");
+      if (parts()[0] === "likes") await show(renderLikes);
+      return;
+    }
+    if (action === "download-likes") {
+      if (!(me && me.offline_downloads)) {
+        showToast("La cuenta demo no puede descargar para sin internet.");
+        return;
+      }
+      const tracks = await api.likes();
+      let ok = 0;
+      let fail = 0;
+      showToast("Descargando Me gusta…");
+      for (const track of tracks) {
+        try {
+          await downloadTrack(track, { demo: isDemo() });
+          ok += 1;
+        } catch {
+          fail += 1;
+        }
+      }
+      showToast(fail ? `Descargadas ${ok}. Fallaron ${fail}.` : `Descargadas ${ok} canciones.`);
+      if (parts()[0] === "likes") await show(renderLikes);
+      return;
+    }
+    if (action === "clear-offline") {
+      const n = await clearOfflineDownloads();
+      showToast(n ? `Se quitaron ${n} descargas de este dispositivo.` : "No había descargas.");
+      if (parts()[0] === "likes") await show(renderLikes);
       return;
     }
     if (action === "like") {

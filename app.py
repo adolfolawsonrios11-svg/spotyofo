@@ -22,6 +22,7 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 
 import accounts
 import adminpin
+import audiolite
 import demo
 import devicelibrary
 import genres
@@ -640,6 +641,8 @@ def me():
         "admin": is_admin(),
         "demo": is_demo(),
         "can_edit": can_edit_tracks(),
+        # Misma idea que Mis radios: la demo escucha, pero no descarga para offline.
+        "offline_downloads": not is_demo(),
     }
     if is_admin():
         data["pending"] = accounts.pending_count(get_db())
@@ -713,6 +716,7 @@ def serialize_track(row):
     data["audio_url"] = f"/static/audio/{data['audio_file']}"
     data["cover_url"] = f"/static/covers/{data['cover']}"
     data["song_key"] = song_key(data.get("title"), data.get("artist"), data.get("duration_ms"))
+    audiolite.attach_lite_fields(data)
     return data
 
 
@@ -1132,6 +1136,41 @@ def get_artist(artist_id):
     return jsonify(artist)
 
 
+@app.get("/api/audio/lite")
+def audio_lite_status():
+    """Indica qué pistas ya tienen copia liviana (sin generar nada)."""
+    raw = (request.args.get("ids") or "").strip()
+    ids = []
+    for part in raw.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            ids.append(int(part))
+        except ValueError:
+            return fail("ids inválidos.")
+    if len(ids) > 100:
+        return fail("Demasiados ids.", 400)
+    if not ids:
+        return jsonify(items=[])
+    marks = ",".join(["%s"] * len(ids))
+    with get_db().cursor() as cur:
+        cur.execute(f"SELECT id, audio_file, file_size FROM tracks WHERE id IN ({marks})", ids)
+        rows = cur.fetchall()
+    items = []
+    for row in rows:
+        info = audiolite.find_lite(row["audio_file"])
+        items.append({
+            "id": row["id"],
+            "ready": bool(info),
+            "original_size": row.get("file_size") or (info["original_size"] if info else None),
+            "lite_url": info["url"] if info else None,
+            "lite_size": info["size"] if info else None,
+            "lite_codec": info["codec"] if info else None,
+        })
+    return jsonify(items=items)
+
+
 @app.get("/api/likes")
 def likes():
     catalog = tracks_where("WHERE l.track_id IS NOT NULL", order="l.liked_at DESC")
@@ -1445,6 +1484,7 @@ def equipo_image():
 LITE_TRACK_FIELDS = (
     "id", "title", "artist", "artist_id", "album", "album_id", "duration_ms", "audio_url",
     "cover_url", "liked", "song_key", "source", "genre", "bpm", "musical_key",
+    "lite_url", "lite_size", "lite_codec", "original_size",
 )
 UPLOADS_MAX_PAGE = 5000
 

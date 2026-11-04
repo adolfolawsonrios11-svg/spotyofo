@@ -1,4 +1,4 @@
-import { api } from "./api.js?v=20261104a";
+import { api } from "./api.js?v=20261104b";
 
 export const EQ_FREQS = [31, 62, 125, 250, 500, 1000, 2000, 4000, 8000, 16000];
 export const EQ_LABELS = ["31", "62", "125", "250", "500", "1k", "2k", "4k", "8k", "16k"];
@@ -849,12 +849,23 @@ export function createPlayer() {
       });
   }
 
+  function trackSrc(track) {
+    if (!track) return "";
+    try {
+      if (localStorage.getItem("spotyofo-data-saver") === "1" && track.lite_url) return track.lite_url;
+    } catch {
+      /* modo privado */
+    }
+    return track.audio_url || "";
+  }
+
   function loadInto(deck, track) {
     deck.track = track;
-    deck.loadedUrl = track.audio_url;
+    const url = trackSrc(track);
+    deck.loadedUrl = url;
     deck.el.muted = false;
     deck.el.preload = "auto";
-    deck.el.src = track.audio_url;
+    deck.el.src = url;
     applySpeedTo(deck);
   }
 
@@ -870,7 +881,7 @@ export function createPlayer() {
 
   function idleHas(track) {
     const deck = idleDeck();
-    return Boolean(track && deck.track === track && deck.loadedUrl === track.audio_url && !deck.el.error);
+    return Boolean(track && deck.track === track && deck.loadedUrl === trackSrc(track) && !deck.el.error);
   }
 
   function invalidateNext() {
@@ -1123,7 +1134,7 @@ export function createPlayer() {
       deck.el.pause();
       active = 1 - active;
       deck = activeDeck();
-    } else if (deck.loadedUrl !== track.audio_url || deck.el.error) {
+    } else if (deck.loadedUrl !== trackSrc(track) || deck.el.error) {
       loadInto(deck, track);
     } else {
       try {

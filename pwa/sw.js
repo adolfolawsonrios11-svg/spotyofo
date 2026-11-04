@@ -1,9 +1,12 @@
-/* SpotyOFO service worker. La versión la inyecta Flask al servir /sw.js.
+﻿/* SpotyOFO service worker. La versión la inyecta Flask al servir /sw.js.
  * Cuentas: las respuestas de la API (datos de cada usuario) NUNCA se guardan en caché,
- * y al cerrar sesión se borran todas las cachés de este sitio. */
+ * y al cerrar sesión se borran todas las cachés de este sitio.
+ * Audio offline: la caché spotyofo-offline-audio la llena la app (Me gusta → Descargar).
+ * Las peticiones Range online siguen yendo al servidor; si no hay red y hay copia, se arma un 206. */
 const VERSION = "__ASSET_V__";
 const SHELL_CACHE = `spotyofo-shell-${VERSION}`;
 const RUNTIME_CACHE = "spotyofo-runtime";
+const OFFLINE_CACHE = "spotyofo-offline-audio";
 const OLD_CACHES = ["spotyofo-api"];
 const RUNTIME_LIMIT = 250;
 const SHELL = [
@@ -81,24 +84,102 @@ async function staleWhileRevalidate(request, cacheName, limit) {
   return cached || refresh;
 }
 
+function parseRange(header, size) {
+  const m = /^bytes=(\d*)-(\d*)$/i.exec((header || "").trim());
+  if (!m) return null;
+  let start = m[1] === "" ? NaN : Number(m[1]);
+  let end = m[2] === "" ? NaN : Number(m[2]);
+  if (Number.isNaN(start)) {
+    if (Number.isNaN(end)) return null;
+    start = Math.max(0, size - end);
+    end = size - 1;
+  } else if (Number.isNaN(end)) {
+    end = size - 1;
+  }
+  if (start < 0 || end < start || start >= size) return null;
+  end = Math.min(end, size - 1);
+  return { start, end };
+}
+
+async function offlineMatch(url) {
+  const cache = await caches.open(OFFLINE_CACHE);
+  return (
+    (await cache.match(url.href)) ||
+    (await cache.match(url.pathname + url.search)) ||
+    (await cache.match(url.pathname))
+  );
+}
+
+async function responseFromOffline(request, cached) {
+  const buf = await cached.arrayBuffer();
+  const type = cached.headers.get("Content-Type") || "application/octet-stream";
+  const range = request.headers.get("range");
+  if (!range) {
+    return new Response(buf, {
+      status: 200,
+      headers: {
+        "Content-Type": type,
+        "Content-Length": String(buf.byteLength),
+        "Accept-Ranges": "bytes",
+        "X-SpotyOFO-Offline": "1",
+      },
+    });
+  }
+  const part = parseRange(range, buf.byteLength);
+  if (!part) {
+    return new Response(null, {
+      status: 416,
+      headers: { "Content-Range": `bytes */${buf.byteLength}` },
+    });
+  }
+  const slice = buf.slice(part.start, part.end + 1);
+  return new Response(slice, {
+    status: 206,
+    headers: {
+      "Content-Type": type,
+      "Content-Length": String(slice.byteLength),
+      "Content-Range": `bytes ${part.start}-${part.end}/${buf.byteLength}`,
+      "Accept-Ranges": "bytes",
+      "X-SpotyOFO-Offline": "1",
+    },
+  });
+}
+
+async function audioFetch(request) {
+  const url = new URL(request.url);
+  const cached = await offlineMatch(url);
+  // Con red: Range y GET van al servidor (comportamiento actual, 206 real).
+  // Sin red (o fallo): si hay copia offline, se sirve completa o por rango.
+  try {
+    const response = await fetch(request);
+    if (response && (response.ok || response.status === 206)) return response;
+    if (cached) return responseFromOffline(request, cached);
+    return response;
+  } catch (error) {
+    if (cached) return responseFromOffline(request, cached);
+    throw error;
+  }
+}
+
 self.addEventListener("fetch", (event) => {
   const request = event.request;
-  if (request.method !== "GET") return; // subidas, me gusta y demás cambios van siempre a la red
-  if (request.headers.has("range")) return; // audio con saltos: directo al servidor
+  if (request.method !== "GET") return;
   const url = new URL(request.url);
 
-  // Fuentes de Google: se guardan para abrir sin conexión.
   if (url.origin === "https://fonts.googleapis.com" || url.origin === "https://fonts.gstatic.com") {
     event.respondWith(staleWhileRevalidate(request, RUNTIME_CACHE, RUNTIME_LIMIT));
     return;
   }
   if (url.origin !== self.location.origin) return;
 
-  // Audio: nunca se guarda en caché (archivos grandes y peticiones por rangos).
-  if (url.pathname.startsWith("/static/audio/") || url.pathname === "/api/equipo/audio") return;
+  if (url.pathname.startsWith("/static/audio/") || url.pathname === "/api/equipo/audio") {
+    event.respondWith(audioFetch(request));
+    return;
+  }
+
+  if (request.headers.has("range")) return;
 
   if (request.mode === "navigate") {
-    // Solo la portada de la app se guarda (sin datos del usuario); login y demás van siempre a la red.
     if (url.pathname !== "/") return;
     event.respondWith(
       networkFirst(request, SHELL_CACHE).catch(async () => (await caches.match("/")) || Response.error()),
@@ -106,16 +187,13 @@ self.addEventListener("fetch", (event) => {
     return;
   }
 
-  // Portadas: primero la caché (cambian poco), con límite de entradas.
   if (url.pathname.startsWith("/static/covers/") || url.pathname === "/api/equipo/image") {
     event.respondWith(cacheFirst(request, RUNTIME_CACHE, RUNTIME_LIMIT));
     return;
   }
 
-  // API: siempre a la red, sin copia (cada usuario ve solo sus datos).
   if (url.pathname.startsWith("/api/")) return;
 
-  // JS, CSS e íconos: red primero (siempre la versión nueva) con respaldo en caché.
   if (url.pathname.startsWith("/static/") || url.pathname === "/manifest.webmanifest") {
     event.respondWith(networkFirst(request, SHELL_CACHE));
   }
