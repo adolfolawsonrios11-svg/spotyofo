@@ -204,10 +204,35 @@ def attach_lite_fields(track: dict) -> dict:
 
 
 def iter_audio_files(limit: int | None = None):
-    files = sorted(
-        p for p in AUDIO_ROOT.rglob("*")
-        if p.is_file() and "lite" not in p.parts and p.suffix.lower() in {".mp3", ".m4a", ".flac", ".ogg", ".wav", ".aac", ".opus", ".webm"}
-    )
+    """Lista originales bajo AUDIO_ROOT. Sigue symlinks (prod: user -> /mnt/ssd/...)."""
+    exts = {".mp3", ".m4a", ".flac", ".ogg", ".wav", ".aac", ".opus", ".webm"}
+    files = []
+    # follow_symlinks exists in Python 3.12+; fallback a os.walk
+    try:
+        iterator = AUDIO_ROOT.rglob("*", follow_symlinks=True)
+        for p in iterator:
+            if not p.is_file():
+                continue
+            if "lite" in p.parts:
+                continue
+            if p.suffix.lower() not in exts:
+                continue
+            files.append(p)
+    except TypeError:
+        import os
+        for root, dirs, names in os.walk(AUDIO_ROOT, followlinks=True):
+            # no entrar a lite/
+            parts = Path(root).parts
+            if "lite" in parts:
+                dirs[:] = []
+                continue
+            if "lite" in dirs:
+                dirs.remove("lite")
+            for name in names:
+                p = Path(root) / name
+                if p.suffix.lower() in exts and p.is_file():
+                    files.append(p)
+    files = sorted(files)
     if limit:
         files = files[:limit]
     return files
