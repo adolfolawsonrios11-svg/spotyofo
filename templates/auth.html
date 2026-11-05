@@ -22,9 +22,14 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@360;480;580;700&family=Syne:wght@700;800&display=swap" rel="stylesheet">
+  <script src="/static/js/theme-boot.js?v={{ asset_v or '1' }}"></script>
   <link rel="stylesheet" href="/static/css/auth.css?v={{ asset_v or '1' }}">
 </head>
 <body>
+  <div class="auth-top"><button type="button" class="theme-toggle" data-theme-toggle aria-pressed="false" aria-label="Usar tema claro" title="Tema claro">
+  <svg class="icon-sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg>
+  <svg class="icon-moon" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 14.5A8.5 8.5 0 0 1 9.5 3 7 7 0 1 0 21 14.5z"/></svg>
+</button></div>
   <main class="auth" id="main">
     <div class="auth-card">
       <a class="auth-brand" href="/" aria-label="SpotyOFO, inicio">
@@ -151,5 +156,6 @@
       {% endif %}
     </div>
   </main>
+  <script src="/static/js/theme-toggle.js?v={{ asset_v or '1' }}"></script>
 </body>
 </html>

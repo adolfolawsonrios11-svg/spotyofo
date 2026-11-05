@@ -1,9 +1,11 @@
-import { createPlayer } from "./player.js?v=20261104b";
-import { createUI } from "./ui.js?v=20261104b";
+import { createPlayer } from "./player.js?v=20261105a";
+import { createUI } from "./ui.js?v=20261105a";
+import { bindThemeToggle } from "./theme.js?v=20261105a";
 
 const player = createPlayer();
 const ui = createUI(player);
 ui.boot();
+bindThemeToggle();
 
 const assetVersion = document.querySelector('meta[name="asset-version"]')?.content || "";
 let reloading = false;

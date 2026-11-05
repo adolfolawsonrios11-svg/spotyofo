@@ -1,7 +1,7 @@
-import { api, onSessionExpired, setCsrf } from "./api.js?v=20261104b";
-import { EQ_FREQS, EQ_LABELS, EQ_PRESETS } from "./player.js?v=20261104b";
-import { createRadio } from "./radio.js?v=20261104b";
-import { canPickDirectory, grantDirectory, listDirectory, pickDirectory, rememberFiles, rootStatus, setLikedMany } from "./localdisk.js?v=20261104b";
+import { api, onSessionExpired, setCsrf } from "./api.js?v=20261105a";
+import { EQ_FREQS, EQ_LABELS, EQ_PRESETS } from "./player.js?v=20261105a";
+import { createRadio } from "./radio.js?v=20261105a";
+import { canPickDirectory, grantDirectory, listDirectory, pickDirectory, rememberFiles, rootStatus, setLikedMany } from "./localdisk.js?v=20261105a";
 import {
   clearAll as clearOfflineDownloads,
   dataSaverOn,
@@ -11,7 +11,7 @@ import {
   removeDownload,
   setDataSaver,
   storageSummary,
-} from "./offline.js?v=20261104b";
+} from "./offline.js?v=20261105a";
 
 const known = new Map();
 const UPLOAD_EXT = [".mp3", ".m4a", ".mp4", ".aac", ".flac", ".ogg", ".oga", ".opus", ".wav"];

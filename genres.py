@@ -72,7 +72,8 @@ ALIASES = {
     "otros": "Otros",
 }
 
-# Paleta de colores (oscuro, brillante) pensada para fondo oscuro y texto blanco.
+# Paleta (oscuro, brillante) para tarjetas/cabeceras con texto claro (WCAG AA).
+# Se mantiene en tema claro: el degradado oscuro del sheet da contraste al texto blanco.
 PALETTE = {
     "crimson": ("#3b0d18", "#ff4d6d"),
     "red": ("#2e0b0b", "#e5484d"),

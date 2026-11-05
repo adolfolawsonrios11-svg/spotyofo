@@ -11,17 +11,48 @@
   --aqua-ink: #06241c;
   --violet: #8d7bff;
   --danger: #ff6d86;
+  --shadow: 0 24px 60px rgba(0, 0, 0, 0.4);
+  --card: linear-gradient(180deg, rgba(34, 39, 51, 0.9), rgba(23, 26, 33, 0.94));
+  --mark-core: #12141a;
+  --glow-violet: rgba(141, 123, 255, 0.24);
+  --glow-aqua: rgba(46, 242, 192, 0.14);
+  --theme-sun: #f5c542;
+  --theme-moon: #c7d2fe;
   --sans: "Outfit", "Segoe UI", sans-serif;
   --display: "Syne", "Outfit", sans-serif;
   color-scheme: dark;
 }
+
+html[data-theme="light"] {
+  --bg: #f4f6fa;
+  --elev: #ffffff;
+  --elev-2: #eef2f8;
+  --line: rgba(15, 23, 42, 0.12);
+  --text: #0f172a;
+  --muted: #475569;
+  --faint: #64748b;
+  --aqua: #0b8a68;
+  --aqua-ink: #ecfff8;
+  --violet: #5b4fd6;
+  --danger: #c6284a;
+  --shadow: 0 18px 44px rgba(15, 23, 42, 0.12);
+  --card: linear-gradient(180deg, #ffffff, #f7f9fc);
+  --mark-core: #dbe4f0;
+  --glow-violet: rgba(91, 79, 214, 0.14);
+  --glow-aqua: rgba(11, 138, 104, 0.1);
+  --theme-sun: #c98500;
+  --theme-moon: #4338ca;
+  color-scheme: light;
+}
+
+html[data-theme="dark"] { color-scheme: dark; }
 * { box-sizing: border-box; }
 html, body { min-height: 100%; }
 body {
   margin: 0;
   background:
-    radial-gradient(900px 420px at -10% -20%, rgba(141, 123, 255, 0.24), transparent 55%),
-    radial-gradient(800px 380px at 110% -10%, rgba(46, 242, 192, 0.14), transparent 50%),
+    radial-gradient(900px 420px at -10% -20%, var(--glow-violet), transparent 55%),
+    radial-gradient(800px 380px at 110% -10%, var(--glow-aqua), transparent 50%),
     var(--bg);
   color: var(--text);
   font-family: var(--sans);
@@ -44,11 +75,11 @@ a:focus-visible, button:focus-visible, input:focus-visible {
 }
 .auth-card {
   width: min(440px, 100%);
-  background: linear-gradient(180deg, rgba(34, 39, 51, 0.9), rgba(23, 26, 33, 0.94));
+  background: var(--card);
   border: 1px solid var(--line);
   border-radius: 22px;
   padding: 28px 24px 24px;
-  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.4);
+  box-shadow: var(--shadow);
 }
 .auth-brand {
   display: inline-flex;
@@ -68,7 +99,7 @@ a:focus-visible, button:focus-visible, input:focus-visible {
   border-radius: 9px;
   background:
     radial-gradient(circle at 50% 50%, transparent 0 4px, var(--violet) 5px 6px, transparent 7px),
-    radial-gradient(circle at 50% 50%, transparent 0 9px, var(--aqua) 10px 12px, #12141a 13px);
+    radial-gradient(circle at 50% 50%, transparent 0 9px, var(--aqua) 10px 12px, var(--mark-core) 13px);
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
 }
 h1 {
@@ -133,3 +164,47 @@ h1 {
   .auth-card { padding: 22px 18px 20px; border-radius: 18px; }
 }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
+
+.auth-top {
+  position: absolute;
+  top: max(12px, env(safe-area-inset-top));
+  right: max(12px, env(safe-area-inset-right));
+  z-index: 5;
+}
+.theme-toggle {
+  position: relative;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  border: 1px solid var(--line);
+  background: var(--elev);
+  color: var(--text);
+  display: inline-grid;
+  place-items: center;
+  padding: 0;
+  overflow: hidden;
+  cursor: pointer;
+  box-shadow: var(--shadow);
+}
+.theme-toggle:focus-visible {
+  outline: 3px solid var(--aqua);
+  outline-offset: 2px;
+}
+.theme-toggle svg {
+  position: absolute;
+  width: 22px;
+  height: 22px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  transition: opacity 0.28s ease, transform 0.35s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.theme-toggle .icon-sun { color: var(--theme-sun); }
+.theme-toggle .icon-moon { color: var(--theme-moon); }
+html[data-theme="dark"] .theme-toggle .icon-sun { opacity: 1; transform: rotate(0) scale(1); }
+html[data-theme="dark"] .theme-toggle .icon-moon { opacity: 0; transform: rotate(-40deg) scale(0.5); }
+html[data-theme="light"] .theme-toggle .icon-sun { opacity: 0; transform: rotate(40deg) scale(0.5); }
+html[data-theme="light"] .theme-toggle .icon-moon { opacity: 1; transform: rotate(0) scale(1); }
+.auth { position: relative; }
