@@ -49,11 +49,13 @@ def find(conn, username):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Cuentas de SpotyOFO")
-    parser.add_argument("command", choices=["list-users", "reset-password", "create-admin", "make-admin", "demo-reset"])
+    parser.add_argument("command", choices=["list-users", "reset-password", "create-admin", "make-admin", "demo-reset", "trash-list", "trash-restore", "assign-uploads"])
     parser.add_argument("username", nargs="?")
     parser.add_argument("--password-stdin", action="store_true")
     parser.add_argument("--no-claim", action="store_true")
     parser.add_argument("--display-name", default="")
+    parser.add_argument("--ids", default="", help="assign-uploads: ids de canciones separados por coma")
+    parser.add_argument("--all-unowned", action="store_true", help="assign-uploads: todas las subidas sin dueño")
     args = parser.parse_args(argv)
 
     conn = connect()
@@ -82,6 +84,26 @@ def main(argv=None):
                 f" {seeded['history']} en el historial."
             )
             return 0
+        if args.command == "trash-list":
+            import uploads
+
+            rows = uploads.trash_list()
+            for row in rows:
+                state = "" if row["archivo_existe"] else "  [sin archivo]"
+                print(f"{row['ficha']}  #{row['track_id']}  {row['artist']} - {row['title']}  borrada {row['deleted_at']} por {row.get('deleted_by_name') or row.get('deleted_by')}{state}")
+            print(f"{len(rows)} en la papelera ({uploads.TRASH_DIR})")
+            return 0
+        if args.command == "trash-restore":
+            import uploads
+
+            if not args.username:
+                parser.error("Falta el nombre de la ficha (.json). Míralas con trash-list.")
+            try:
+                new_id = uploads.trash_restore(conn, args.username)
+            except uploads.UploadError as exc:
+                raise SystemExit(exc.message) from exc
+            print(f"Restaurada como pista #{new_id}. Si quieres su copia liviana: python audiolite.py --all")
+            return 0
         if not args.username:
             parser.error("Falta el nombre de usuario.")
         username = accounts.normalize_username(args.username)
@@ -106,6 +128,26 @@ def main(argv=None):
                         conn, username, args.display_name, password, claim=not args.no_claim
                     )
                     print(f"Administrador principal «{username}» creado (id {user_id}). Datos anteriores asignados: {moved or 'ninguno'}")
+            elif args.command == "assign-uploads":
+                user = find(conn, username)
+                if not user:
+                    raise SystemExit(f"No existe la cuenta «{username}».")
+                if user.get("is_demo"):
+                    raise SystemExit("La cuenta demo no puede ser dueña de canciones.")
+                ids = [int(part) for part in args.ids.split(",") if part.strip().isdigit()]
+                if not ids and not args.all_unowned:
+                    raise SystemExit("Indica --ids 1,2,3 o --all-unowned.")
+                with conn.cursor() as cur:
+                    if ids:
+                        marks = ",".join(["%s"] * len(ids))
+                        cur.execute(
+                            f"UPDATE tracks SET uploaded_by = %s WHERE source = 'user' AND uploaded_by IS NULL AND id IN ({marks})",
+                            (user["id"], *ids),
+                        )
+                    else:
+                        cur.execute("UPDATE tracks SET uploaded_by = %s WHERE source = 'user' AND uploaded_by IS NULL", (user["id"],))
+                    changed = cur.rowcount
+                print(f"{changed} canciones sin dueño ahora pertenecen a «{username}».")
             elif args.command == "make-admin":
                 user = find(conn, username)
                 if not user:

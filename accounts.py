@@ -484,6 +484,8 @@ def delete_user(conn, actor, target_id):
             covers = [row["cover_file"] for row in lists if row["cover_file"] == f"user-{row['id']}.svg"]
             cur.execute("DELETE FROM playlists WHERE owner_id = %s AND editorial = 0", (target["id"],))
             cur.execute("DELETE FROM play_history WHERE user_id = %s", (target["id"],))
+            # Sus canciones siguen en la biblioteca, sin dueño (solo el administrador podrá borrarlas).
+            cur.execute("UPDATE tracks SET uploaded_by = NULL WHERE uploaded_by = %s", (target["id"],))
             cur.execute("DELETE FROM users WHERE id = %s", (target["id"],))
         conn.commit()
     except BaseException:

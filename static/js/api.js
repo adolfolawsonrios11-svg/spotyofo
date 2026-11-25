@@ -154,6 +154,13 @@ export const api = {
   uploadsPage: (offset = 0, limit = 0) => request(`/api/uploads?lite=1&offset=${offset}${limit ? `&limit=${limit}` : ""}`),
   upload: uploadFile,
   deleteTrack: (id) => request(`/api/tracks/${id}`, { method: "DELETE" }),
+  // Compartir: enlace /s/<token> (exige sesión) y «Compartidos conmigo».
+  createShare: (body) => request("/api/shares", { method: "POST", body: JSON.stringify(body) }),
+  share: (token) => request(`/api/shares/${encodeURIComponent(token)}`),
+  revokeShare: (token) => request(`/api/shares/${encodeURIComponent(token)}`, { method: "DELETE" }),
+  sharedInbox: () => request("/api/shares/inbox"),
+  // Qué ids siguen existiendo (solo devuelve los que están): sirve para limpiar descargas de canciones eliminadas.
+  audioLite: (ids) => request(`/api/audio/lite?ids=${ids.join(",")}`),
   // Edición de canciones (solo administradores).
   editTrack: (id, changes) => request(`/api/tracks/${id}`, { method: "PATCH", body: JSON.stringify(changes) }),
   editTracks: (ids, changes) => request("/api/tracks/batch", { method: "PATCH", body: JSON.stringify({ ids, changes }) }),

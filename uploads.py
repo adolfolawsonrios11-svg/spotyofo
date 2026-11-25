@@ -3,11 +3,14 @@
 import base64
 import hashlib
 import html
+import json
 import os
 import re
 import secrets
+import shutil
 import unicodedata
 import zlib
+from datetime import datetime
 from pathlib import Path
 
 import mutagen
@@ -26,6 +29,9 @@ USER_AUDIO_DIR = AUDIO_ROOT / "user"
 USER_COVER_DIR = COVER_ROOT / "user"
 TMP_DIR = USER_AUDIO_DIR / ".tmp"
 PENDING_FILE = USER_AUDIO_DIR / ".pending-delete.txt"
+# Papelera: al borrar una canción su archivo se mueve aquí (con una ficha .json) y el administrador puede recuperarlo.
+# En producción apunta al SSD (SPOTY_TRASH_DIR=/mnt/ssd/spotyofo-trash); en local queda en instance/trash (fuera de Git).
+TRASH_DIR = Path(os.environ.get("SPOTY_TRASH_DIR", "").strip() or (ROOT / "instance" / "trash")).expanduser()
 
 MAX_FILE_BYTES = 200 * 1024 * 1024
 MAX_COVER_BYTES = 12 * 1024 * 1024
@@ -386,8 +392,8 @@ def detect(path):
 
 # ---------- alta ----------
 
-def store_upload(conn, storage):
-    """Guarda un FileStorage de Flask. Devuelve el id de la pista nueva."""
+def store_upload(conn, storage, uploaded_by=None):
+    """Guarda un FileStorage de Flask. Devuelve el id de la pista nueva. uploaded_by = id de la cuenta que sube."""
     ensure_dirs()
     original = original_filename(storage.filename)
     ext = os.path.splitext(original)[1].lower()
@@ -475,8 +481,8 @@ def store_upload(conn, storage):
                     """
                     INSERT INTO tracks (
                       slug, album_id, artist_id, title, track_number, duration_ms, audio_file,
-                      genre, bpm, musical_key, source, file_hash, original_name, file_size, uploaded_at
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'user', %s, %s, %s, NOW())
+                      genre, bpm, musical_key, source, file_hash, original_name, file_size, uploaded_at, uploaded_by
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'user', %s, %s, %s, NOW(), %s)
                     """,
                     (
                         f"u-{file_hash[:12]}",
@@ -492,6 +498,7 @@ def store_upload(conn, storage):
                         file_hash,
                         original,
                         size,
+                        uploaded_by,
                     ),
                 )
                 track_id = cur.lastrowid
@@ -577,51 +584,211 @@ def find_or_create_album(cur, artist_id, title, year):
     return album_id, cover
 
 
-# ---------- baja ----------
+# ---------- baja (a la papelera) ----------
 
-def delete_upload(conn, track_id):
-    """Elimina una pista subida, su archivo y el álbum/artista si quedan vacíos."""
+def can_delete(track, user_id, is_admin):
+    """Regla única: solo canciones subidas por cuenta; el administrador borra cualquiera de ellas,
+    cada cuenta solo las que subió ella (uploaded_by). Las anteriores a este campo (NULL) son solo del administrador."""
+    if track["source"] != "user":
+        return False
+    if is_admin:
+        return True
+    return track.get("uploaded_by") is not None and track["uploaded_by"] == user_id
+
+
+def _move_to_trash(audio_rel, stem):
+    """Mueve el original a la papelera. Devuelve la ruta destino, o None si el archivo ya no estaba."""
+    src = AUDIO_ROOT / audio_rel
+    if not audio_rel.startswith("user/") or not inside(src, USER_AUDIO_DIR) or not src.exists():
+        return None
+    TRASH_DIR.mkdir(parents=True, exist_ok=True)
+    dest = TRASH_DIR / f"{stem}{Path(audio_rel).suffix.lower()}"
+    real = src.resolve()
+    try:
+        shutil.move(str(real), str(dest))  # entre discos (SSD) copia y borra
+    except OSError:
+        if dest.exists() and dest.stat().st_size == real.stat().st_size and not real.exists():
+            return dest
+        try:
+            if dest.exists():
+                dest.unlink()
+            shutil.copy2(real, dest)
+        except OSError as exc:
+            raise UploadError("No se pudo mover el archivo a la papelera. No se borró nada.", 500) from exc
+        remove_file(src, USER_AUDIO_DIR)  # si Windows lo tiene abierto, queda pendiente
+    return dest
+
+
+def _restore_from_trash(dest, audio_rel):
+    if dest is None or not dest.exists():
+        return
+    target = AUDIO_ROOT / audio_rel
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(dest), str(target.parent.resolve() / target.name))
+    except OSError:
+        pass
+
+
+def _remove_lite(audio_rel):
+    """Las copias livianas se regeneran con «audiolite»: no van a la papelera."""
+    import audiolite
+
+    try:
+        candidates = audiolite.lite_candidates(audio_rel)
+    except Exception:
+        return
+    for _codec, path, _url in candidates:
+        try:
+            if path.is_file():
+                path.unlink()
+        except OSError:
+            pass
+
+
+def delete_upload(conn, track_id, actor_id=None, is_admin=False, actor_name=""):
+    """Elimina una pista subida y el álbum/artista si quedan vacíos. Exige ser dueña de la pista o administrador.
+
+    Soft delete: el audio original va a TRASH_DIR junto con una ficha .json (para restaurar), y se borran de la base
+    sus Me gusta, listas, historial, enlaces compartidos y la copia liviana. Las cachés offline de cada
+    dispositivo se limpian solas (ver offline.js). Devuelve {"trash": nombre del archivo o None}.
+    """
     with conn.cursor() as cur:
-        cur.execute("SELECT id, source, audio_file, album_id, artist_id FROM tracks WHERE id = %s", (track_id,))
+        cur.execute(
+            """
+            SELECT t.id, t.source, t.audio_file, t.album_id, t.artist_id, t.uploaded_by, t.title, t.genre, t.track_number,
+                   t.duration_ms, t.file_hash, t.original_name, t.file_size, t.bpm, t.musical_key, t.uploaded_at,
+                   a.name AS artist, al.title AS album, al.year AS year
+            FROM tracks t JOIN artists a ON a.id = t.artist_id JOIN albums al ON al.id = t.album_id
+            WHERE t.id = %s
+            """,
+            (track_id,),
+        )
         track = cur.fetchone()
     if not track:
         raise UploadError("Pista no encontrada.", 404)
     if track["source"] != "user":
-        raise UploadError("Solo se pueden eliminar canciones que subiste tú.", 403)
-    covers = []
-    conn.begin()
-    try:
-        with conn.cursor() as cur:
-            cur.execute("DELETE FROM tracks WHERE id = %s", (track_id,))
-            cur.execute("SELECT id, cover_file, artist_id FROM albums WHERE id = %s", (track["album_id"],))
-            album = cur.fetchone()
-            cur.execute("SELECT COUNT(*) AS n FROM tracks WHERE album_id = %s", (track["album_id"],))
-            if album and cur.fetchone()["n"] == 0:
-                cur.execute("DELETE FROM albums WHERE id = %s AND source = 'user'", (album["id"],))
-                covers.append(album["cover_file"])
-            for artist_id in {track["artist_id"], album["artist_id"] if album else track["artist_id"]}:
-                cur.execute(
-                    """
-                    SELECT (SELECT COUNT(*) FROM tracks WHERE artist_id = %s)
-                         + (SELECT COUNT(*) FROM albums WHERE artist_id = %s) AS n
-                    """,
-                    (artist_id, artist_id),
-                )
-                if cur.fetchone()["n"] == 0:
-                    cur.execute("SELECT cover_file FROM artists WHERE id = %s AND source = 'user'", (artist_id,))
-                    artist = cur.fetchone()
-                    if artist:
-                        cur.execute("DELETE FROM artists WHERE id = %s", (artist_id,))
-                        covers.append(artist["cover_file"])
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
+        raise UploadError("Solo se pueden eliminar canciones que se subieron.", 403)
+    if not can_delete(track, actor_id, is_admin):
+        raise UploadError("Solo puedes eliminar las canciones que subiste tú.", 403)
     audio_rel = track["audio_file"]
-    if audio_rel.startswith("user/"):
-        remove_file(AUDIO_ROOT / audio_rel, USER_AUDIO_DIR)
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    stem = f"{stamp}_{track['id']}_{(track['file_hash'] or 'sin-hash')[:16]}"
+    dest = _move_to_trash(audio_rel, stem)
+    covers = []
+    try:
+        conn.begin()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM shares WHERE kind = 'track' AND target_id = %s", (track_id,))
+                # likes, listas, historial y Me gusta del equipo caen por ON DELETE CASCADE
+                cur.execute("DELETE FROM tracks WHERE id = %s", (track_id,))
+                cur.execute("SELECT id, cover_file, artist_id FROM albums WHERE id = %s", (track["album_id"],))
+                album = cur.fetchone()
+                cur.execute("SELECT COUNT(*) AS n FROM tracks WHERE album_id = %s", (track["album_id"],))
+                if album and cur.fetchone()["n"] == 0:
+                    cur.execute("DELETE FROM shares WHERE kind = 'album' AND target_id = %s", (album["id"],))
+                    cur.execute("DELETE FROM albums WHERE id = %s AND source = 'user'", (album["id"],))
+                    covers.append(album["cover_file"])
+                for artist_id in {track["artist_id"], album["artist_id"] if album else track["artist_id"]}:
+                    cur.execute(
+                        """
+                        SELECT (SELECT COUNT(*) FROM tracks WHERE artist_id = %s)
+                             + (SELECT COUNT(*) FROM albums WHERE artist_id = %s) AS n
+                        """,
+                        (artist_id, artist_id),
+                    )
+                    if cur.fetchone()["n"] == 0:
+                        cur.execute("SELECT cover_file FROM artists WHERE id = %s AND source = 'user'", (artist_id,))
+                        artist = cur.fetchone()
+                        if artist:
+                            cur.execute("DELETE FROM artists WHERE id = %s", (artist_id,))
+                            covers.append(artist["cover_file"])
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+    except Exception:
+        _restore_from_trash(dest, audio_rel)
+        raise
+    trash_name = None
+    if dest is not None:
+        trash_name = dest.name
+        record = {
+            "track_id": track["id"],
+            "title": track["title"],
+            "artist": track["artist"],
+            "album": track["album"],
+            "year": track["year"],
+            "genre": track["genre"],
+            "track_number": track["track_number"],
+            "duration_ms": track["duration_ms"],
+            "bpm": track["bpm"],
+            "musical_key": track["musical_key"],
+            "audio_file": audio_rel,
+            "trash_file": dest.name,
+            "file_hash": track["file_hash"],
+            "original_name": track["original_name"],
+            "file_size": track["file_size"],
+            "uploaded_at": track["uploaded_at"].isoformat(sep=" ", timespec="seconds") if track["uploaded_at"] else None,
+            "uploaded_by": track["uploaded_by"],
+            "deleted_by": actor_id,
+            "deleted_by_name": actor_name,
+            "deleted_at": datetime.now().isoformat(sep=" ", timespec="seconds"),
+        }
+        try:
+            (TRASH_DIR / f"{stem}.json").write_text(json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8")
+        except OSError:
+            pass
+    _remove_lite(audio_rel)
     with conn.cursor() as cur:
         for cover in covers:
             if cover and cover.startswith("user/") and not cover_in_use(cur, cover):
                 remove_file(COVER_ROOT / cover, USER_COVER_DIR)
-    return True
+    return {"trash": trash_name}
+
+
+def trash_list():
+    """Fichas de la papelera, la más reciente primero."""
+    items = []
+    if not TRASH_DIR.is_dir():
+        return items
+    for meta in sorted(TRASH_DIR.glob("*.json"), reverse=True):
+        try:
+            data = json.loads(meta.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        data["ficha"] = meta.name
+        data["archivo_existe"] = (TRASH_DIR / str(data.get("trash_file", ""))).is_file()
+        items.append(data)
+    return items
+
+
+def trash_restore(conn, ficha, uploaded_by="keep"):
+    """Vuelve a subir un archivo de la papelera (lee sus etiquetas de nuevo). Devuelve el id de la pista nueva."""
+    from werkzeug.datastructures import FileStorage
+
+    meta_path = TRASH_DIR / Path(ficha).name
+    if not meta_path.is_file():
+        raise UploadError("No existe esa ficha en la papelera.", 404)
+    data = json.loads(meta_path.read_text(encoding="utf-8"))
+    audio = TRASH_DIR / Path(str(data.get("trash_file", ""))).name
+    if not audio.is_file():
+        raise UploadError("El archivo de esa ficha ya no está en la papelera.", 404)
+    owner = data.get("uploaded_by") if uploaded_by == "keep" else uploaded_by
+    if owner is not None:
+        with conn.cursor() as cur:
+            cur.execute("SELECT id FROM users WHERE id = %s", (owner,))
+            if not cur.fetchone():
+                owner = None
+    with audio.open("rb") as handle:
+        storage = FileStorage(stream=handle, filename=data.get("original_name") or audio.name)
+        track_id = store_upload(conn, storage, uploaded_by=owner)
+    done = TRASH_DIR / "restaurado"
+    done.mkdir(exist_ok=True)
+    for item in (audio, meta_path):
+        try:
+            shutil.move(str(item), str(done / item.name))
+        except OSError:
+            pass
+    return track_id

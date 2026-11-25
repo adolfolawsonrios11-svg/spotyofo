@@ -1,17 +1,18 @@
-import { api, onSessionExpired, setCsrf } from "./api.js?v=20261105a";
-import { EQ_FREQS, EQ_LABELS, EQ_PRESETS } from "./player.js?v=20261105a";
-import { createRadio } from "./radio.js?v=20261105a";
-import { canPickDirectory, grantDirectory, listDirectory, pickDirectory, rememberFiles, rootStatus, setLikedMany } from "./localdisk.js?v=20261105a";
+import { api, onSessionExpired, setCsrf } from "./api.js?v=20261125a";
+import { EQ_FREQS, EQ_LABELS, EQ_PRESETS } from "./player.js?v=20261125a";
+import { createRadio } from "./radio.js?v=20261125a";
+import { canPickDirectory, grantDirectory, listDirectory, pickDirectory, rememberFiles, rootStatus, setLikedMany } from "./localdisk.js?v=20261125a";
 import {
   clearAll as clearOfflineDownloads,
   dataSaverOn,
   downloadTrack,
   formatBytes,
   mergeOfflineFlags,
+  pruneDeleted,
   removeDownload,
   setDataSaver,
   storageSummary,
-} from "./offline.js?v=20261105a";
+} from "./offline.js?v=20261125a";
 
 const known = new Map();
 const UPLOAD_EXT = [".mp3", ".m4a", ".mp4", ".aac", ".flac", ".ogg", ".oga", ".opus", ".wav"];
@@ -34,6 +35,7 @@ const SHORTCUTS = [
   ["?", "Ver estos atajos"],
   ["Esc", "Cerrar ventanas y paneles"],
 ];
+const SHARE_ICON = `<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="6" cy="12" r="2.5"/><circle cx="18" cy="6" r="2.5"/><circle cx="18" cy="18" r="2.5"/><path d="m8.2 10.8 7.6-3.6M8.2 13.2l7.6 3.6"/></svg>`;
 const TRASH_ICON = `<svg viewBox="0 0 24 24"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg>`;
 
 export function createUI(player) {
@@ -276,7 +278,11 @@ export function createUI(player) {
   }
 
   async function paintSide() {
-    const [lists, genreData] = await Promise.all([api.playlists(), api.genres().catch(() => ({ genres: [] }))]);
+    const [lists, genreData, inbox] = await Promise.all([
+      api.playlists(),
+      api.genres().catch(() => ({ genres: [] })),
+      isDemo() ? Promise.resolve({ unseen: 0 }) : api.sharedInbox().catch(() => ({ unseen: 0 })),
+    ]);
     const mine = lists.filter((item) => !item.editorial);
     const editorial = lists.filter((item) => item.editorial);
     const current = parts();
@@ -285,6 +291,7 @@ export function createUI(player) {
     const likesOn = current[0] === "likes";
     side.innerHTML = `
       <a class="side-item ${likesOn ? "is-active" : ""}" href="#/likes"><span class="dot heart" aria-hidden="true">♡</span><span>Me gusta</span></a>
+      ${isDemo() ? "" : `<a class="side-item ${current[0] === "shared" ? "is-active" : ""}" href="#/shared"><span class="dot share" aria-hidden="true">${SHARE_ICON}</span><span>Compartidos conmigo</span>${inbox.unseen ? `<span class="side-badge" aria-label="${inbox.unseen} sin abrir">${inbox.unseen}</span>` : ""}</a>`}
       ${mine.map((item) => sideItem(item, activeId)).join("")}
       ${editorial.length ? `<p class="side-label">Editorial</p>` : ""}
       ${editorial.map((item) => sideItem(item, activeId)).join("")}
@@ -301,7 +308,7 @@ export function createUI(player) {
 
   function markNav() {
     const name = parts()[0] || "home";
-    const key = name === "likes" || name === "playlist" ? "library" : name === "genre" || name === "genres" ? "search" : name;
+    const key = name === "likes" || name === "playlist" || name === "shared" || name === "s" ? "library" : name === "genre" || name === "genres" ? "search" : name;
     document.querySelectorAll(".nav-link").forEach((link) => {
       const active = link.dataset.nav === (key || "home");
       link.classList.toggle("is-active", active);
@@ -486,7 +493,12 @@ export function createUI(player) {
   }
 
   async function renderLibrary() {
-    const [lists, likes, genreData] = await Promise.all([api.playlists(), api.likes(), api.genres().catch(() => ({ genres: [] }))]);
+    const [lists, likes, genreData, inbox] = await Promise.all([
+      api.playlists(),
+      api.likes(),
+      api.genres().catch(() => ({ genres: [] })),
+      isDemo() ? Promise.resolve({ unseen: 0 }) : api.sharedInbox().catch(() => ({ unseen: 0 })),
+    ]);
     remember(likes);
     const genreCount = (genreData.genres || []).filter((item) => item.slug !== "sin-genero").length;
     const mine = lists.filter((item) => !item.editorial);
@@ -497,6 +509,7 @@ export function createUI(player) {
       <div class="library-grid">
         <a class="lib-card likes" href="#/likes"><strong>Me gusta</strong><span>Mis canciones · ${likes.length} ${likes.length === 1 ? "canción" : "canciones"}</span></a>
         ${genreCount ? `<a class="lib-card genres" href="#/genres"><strong>Géneros</strong><span>${plural(genreCount, "género", "géneros")}</span></a>` : ""}
+        ${isDemo() ? "" : `<a class="lib-card shared" href="#/shared"><strong>Compartidos conmigo</strong><span>${inbox.unseen ? plural(inbox.unseen, "nuevo", "nuevos") : "Lo que te envían otras cuentas"}</span></a>`}
         <button type="button" class="lib-card create" data-action="create-playlist"><strong>Nueva lista</strong><span>Armar una selección</span></button>
       </div>
       ${mine.length ? section("Tus listas", mine.map((item) => card(`#/playlist/${item.id}`, item.cover_url, item.name, item.description || "Lista personal", "play-playlist", item.id)).join("")) : ""}
@@ -669,6 +682,64 @@ export function createUI(player) {
     return rows;
   }
 
+  function shareButton(kind, id) {
+    if (isDemo()) return "";
+    return `<button type="button" class="btn ghost share-btn" data-action="share-${kind}" data-id="${esc(id)}">${SHARE_ICON}<span>Compartir</span></button>`;
+  }
+
+  // Enlace /s/<token> abierto dentro de la app: canción o disco compartidos por otra cuenta (o por ti).
+  async function renderShare(token) {
+    const data = await api.share(decodeURIComponent(token));
+    const by = data.mine ? "Lo compartiste tú" : `Compartido por ${esc(data.from.display_name)} (@${esc(data.from.username)})`;
+    if (data.kind === "track") {
+      const track = data.track;
+      remember([track]);
+      return `
+        <header class="sheet" style="--a:${track.accent_a};--b:${track.accent_b}">
+          ${coverImg(track.cover_url, { high: true })}
+          <div>
+            <p class="kicker">Canción compartida</p>
+            <h1>${esc(track.title)}</h1>
+            <p class="sheet-sub"><a href="#/artist/${track.artist_id}">${esc(track.artist)}</a> · <a href="#/album/${track.album_id}">${esc(track.album)}</a> · ${fmt(track.duration_ms)}<br>${by}</p>
+            <div class="sheet-actions">
+              <button type="button" class="btn solid" data-action="play-track" data-id="${track.id}" data-context="shared" data-context-id="${esc(data.token)}" data-index="0">Reproducir</button>
+              ${shareButton("track", track.id)}
+            </div>
+          </div>
+        </header>
+        <div class="tracklist">${trackRow(track, 0, { album: true, context: "shared", contextId: data.token })}</div>
+      `;
+    }
+    const album = data.album;
+    remember(album.tracks);
+    const meta = `<a href="#/artist/${album.artist_id}">${esc(album.artist)}</a>${album.year ? ` · ${esc(album.year)}` : ""} · ${album.tracks.length} canciones · ${fmt(album.duration_ms)}<br>${by}`;
+    return `
+      ${collectionHead(album, "Disco compartido", "play-album", album.id, meta, `${album.tracks.length ? addButton("album", album.id) : ""}${shareButton("album", album.id)}`)}
+      <div class="tracklist">${album.tracks.map((track, index) => trackRow(track, index, { album: false, context: "album", contextId: album.id })).join("")}</div>
+    `;
+  }
+
+  async function renderShared() {
+    const data = await api.sharedInbox();
+    const rows = data.items.map((item) => `
+      <div class="share-row${item.unseen ? " is-new" : ""}">
+        <a class="share-open" href="#/s/${esc(item.token)}">
+          ${coverImg(item.cover_url, { size: 52, lazy: true })}
+          <span class="share-main">
+            <strong>${esc(item.title)}</strong>
+            <small>${item.kind === "album" ? "Disco" : "Canción"}${item.artist ? ` · ${esc(item.artist)}` : ""} · de ${esc(item.from_name)}${item.shared_at ? ` · ${esc(item.shared_at.slice(0, 10))}` : ""}</small>
+          </span>
+          ${item.unseen ? `<span class="share-new">Nuevo</span>` : ""}
+        </a>
+        <button type="button" class="icon-btn" data-action="share-dismiss" data-token="${esc(item.token)}" aria-label="Quitar «${esc(item.title)}» de Compartidos conmigo" title="Quitar">${TRASH_ICON}</button>
+      </div>`).join("");
+    return `
+      <h1 class="hello">Compartidos conmigo</h1>
+      <p class="lead">Canciones y discos que otras cuentas de SpotyOFO te enviaron. Solo tú ves esta lista.</p>
+      ${rows ? `<div class="share-list">${rows}</div>` : `<p class="empty">Todavía no te compartieron nada. Cuando alguien use «Compartir → Enviar a una cuenta» con tu usuario, aparecerá aquí.</p>`}
+    `;
+  }
+
   async function renderPlaylist(id) {
     const item = await api.playlist(id);
     remember(item.tracks);
@@ -684,7 +755,7 @@ export function createUI(player) {
     remember(item.tracks);
     const meta = `<a href="#/artist/${item.artist_id}">${esc(item.artist)}</a>${item.year ? ` · ${esc(item.year)}` : ""} · ${item.tracks.length} canciones · ${fmt(item.duration_ms)}<br>${esc(item.credit)}`;
     return `
-      ${collectionHead(item, "Álbum", "play-album", item.id, meta, item.tracks.length ? addButton("album", item.id) : "")}
+      ${collectionHead(item, "Álbum", "play-album", item.id, meta, `${item.tracks.length ? addButton("album", item.id) : ""}${shareButton("album", item.id)}`)}
       <div class="tracklist">${item.tracks.map((track, index) => trackRow(track, index, { album: false, context: "album", contextId: item.id })).join("")}</div>
     `;
   }
@@ -709,7 +780,7 @@ export function createUI(player) {
 
   function uploadRow(track, index, admin) {
     remember([track]);
-    return `<div class="track up-row${admin ? "" : " no-delete"}" data-id="${track.id}" data-song="${esc(track.song_key || "")}">
+    return `<div class="track up-row${track.can_delete ? "" : " no-delete"}" data-id="${track.id}" data-song="${esc(track.song_key || "")}">
       <button type="button" class="up-cover" data-action="play-track" data-id="${track.id}" data-context="uploads" data-context-id="uploads" data-index="${index}" aria-label="Reproducir ${esc(track.title)}">
         ${coverImg(track.cover_url, { size: 48 })}
       </button>
@@ -719,7 +790,7 @@ export function createUI(player) {
       </div>
       <span class="time">${fmt(track.duration_ms)}</span>
       <button type="button" class="icon-btn heart ${track.liked ? "is-on" : ""}" data-action="like" data-like="${track.id}" aria-label="Me gusta">${track.liked ? "♥" : "♡"}</button>
-      ${admin ? `<button type="button" class="icon-btn up-delete" data-action="delete-upload" data-id="${track.id}" aria-label="Eliminar ${esc(track.title)}" title="Eliminar">${TRASH_ICON}</button>` : ""}
+      ${track.can_delete ? `<button type="button" class="icon-btn up-delete" data-action="delete-upload" data-id="${track.id}" aria-label="Eliminar ${esc(track.title)}" title="Eliminar">${TRASH_ICON}</button>` : ""}
       <button type="button" class="icon-btn more" data-action="menu" data-id="${track.id}" data-playlist="" aria-label="Más opciones para ${esc(track.title)}" aria-haspopup="menu">···</button>
     </div>`;
   }
@@ -1156,16 +1227,144 @@ export function createUI(player) {
     if (parts()[0] === "uploads") route();
   }
 
+  async function copyText(text) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch {
+      /* sin permiso del portapapeles: se prueba con el campo seleccionado */
+    }
+    const field = document.querySelector("[data-share-link]");
+    if (!field) return false;
+    field.removeAttribute("readonly");
+    field.select();
+    field.setSelectionRange(0, text.length);
+    let ok = false;
+    try {
+      ok = document.execCommand("copy");
+    } catch {
+      ok = false;
+    }
+    field.setAttribute("readonly", "");
+    return ok;
+  }
+
+  // Compartir una canción o un disco: crea el enlace /s/<token>, lo copia o abre el menú nativo del celular (Web Share API)
+  // y, si quieres, lo envía a una cuenta concreta («Compartidos conmigo»). El enlace exige iniciar sesión.
+  function openShare(kind, id, title) {
+    if (isDemo()) {
+      showToast("La cuenta demo no puede compartir.");
+      return;
+    }
+    const label = kind === "album" ? "disco" : "canción";
+    const native = Boolean(navigator.share) && coarseQuery.matches;
+    let share = null;
+    let url = "";
+    const ensureLink = async () => {
+      if (share) return url;
+      share = await api.createShare({ kind, id });
+      url = `${location.origin}${share.path}`;
+      const field = document.querySelector("[data-share-link]");
+      if (field) field.value = url;
+      document.querySelector("[data-share-revoke]")?.removeAttribute("hidden");
+      return url;
+    };
+    const say = (message, isError = false) => {
+      const box = document.querySelector("[data-share-status]");
+      if (!box) return;
+      box.textContent = message;
+      box.classList.toggle("is-error", isError);
+    };
+    openModal({
+      title: `Compartir ${label}`,
+      confirm: "Copiar enlace",
+      cancelLabel: "Cerrar",
+      body: `
+        <p class="share-title">${esc(title)}</p>
+        <p class="share-note">Solo lo abren cuentas de SpotyOFO con sesión iniciada.</p>
+        <label>Enlace<input class="share-link" data-share-link readonly value="Creando enlace…" aria-live="polite"></label>
+        ${native ? `<button type="button" class="btn solid share-native" data-share-native>${SHARE_ICON}<span>Compartir…</span></button>` : ""}
+        <label>Enviar a una cuenta
+          <span class="share-to">
+            <input data-share-to placeholder="nombre de usuario" maxlength="32" autocomplete="off" autocapitalize="none" spellcheck="false" aria-label="Nombre de usuario de la cuenta">
+            <button type="button" class="btn ghost" data-share-send>Enviar</button>
+          </span>
+        </label>
+        <p class="share-status" role="status" data-share-status></p>
+        <button type="button" class="btn ghost danger-text share-revoke" data-share-revoke hidden>Dejar de compartir este enlace</button>`,
+      onSubmit: async () => {
+        const link = await ensureLink();
+        if (await copyText(link)) showToast("Enlace copiado");
+        else say("No pude copiarlo solo: selecciónalo y cópialo.", true);
+      },
+    });
+    const body = document.getElementById("modal-body");
+    ensureLink().catch((error) => {
+      const field = document.querySelector("[data-share-link]");
+      if (field) field.value = "";
+      say(error.message, true);
+    });
+    body.querySelector("[data-share-native]")?.addEventListener("click", async () => {
+      try {
+        const link = await ensureLink();
+        await navigator.share({ title: `${title} · SpotyOFO`, text: `Escucha «${title}» en SpotyOFO`, url: link });
+      } catch (error) {
+        if (error?.name === "AbortError") return;
+        const link = url;
+        if (link && (await copyText(link))) showToast("Enlace copiado");
+        else say(error?.message || "No se pudo compartir.", true);
+      }
+    });
+    body.querySelector("[data-share-send]")?.addEventListener("click", async (event) => {
+      const input = body.querySelector("[data-share-to]");
+      const who = input.value.trim().replace(/^@/, "");
+      if (!who) {
+        say("Escribe el nombre de usuario de la cuenta.", true);
+        input.focus();
+        return;
+      }
+      event.currentTarget.disabled = true;
+      try {
+        const result = await api.createShare({ kind, id, to: who });
+        say(`Enviado a ${result.to?.display_name || who}. Lo verá en «Compartidos conmigo».`);
+        input.value = "";
+      } catch (error) {
+        say(error.message, true);
+      } finally {
+        event.currentTarget.disabled = false;
+      }
+    });
+    body.querySelector("[data-share-to]")?.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter") return;
+      event.preventDefault();
+      body.querySelector("[data-share-send]")?.click();
+    });
+    body.querySelector("[data-share-revoke]")?.addEventListener("click", async () => {
+      if (!share) return;
+      try {
+        await api.revokeShare(share.token);
+        share = null;
+        url = "";
+        body.querySelector("[data-share-link]").value = "Enlace desactivado";
+        body.querySelector("[data-share-revoke]").hidden = true;
+        say("Listo: ese enlace ya no abre. «Copiar enlace» crea uno nuevo.");
+      } catch (error) {
+        say(error.message, true);
+      }
+    });
+  }
+
   function confirmDelete(track) {
     openModal({
       title: "Eliminar canción",
       confirm: "Eliminar",
       danger: true,
-      body: `<p>Se eliminará «${esc(track.title)}» de ${esc(track.artist)}, con su archivo. También sale de tus listas y de Me gusta.</p>`,
+      body: `<p>Se eliminará «${esc(track.title)}» de ${esc(track.artist)} para todas las cuentas: sale de las listas, de Me gusta y de los enlaces compartidos, y se borran las descargas sin internet. El administrador puede recuperar el archivo de la papelera.</p>`,
       onSubmit: async () => {
         closeModal();
         await api.deleteTrack(track.id);
         known.delete(track.id);
+        removeDownload(track.id).catch(() => {});
         const snap = player.snapshot();
         for (let i = snap.queue.length - 1; i >= 0; i -= 1) {
           if (snap.queue[i].id === track.id && i !== snap.index) player.removeQueued(i);
@@ -1409,6 +1608,24 @@ export function createUI(player) {
     const demoNote = document.getElementById("user-demo-note");
     if (demoNote) demoNote.hidden = !isDemo();
     paintPending(me.pending || 0);
+  }
+
+  // Descargas sin internet de canciones que alguien eliminó: se quitan de este dispositivo al abrir la app (con red).
+  async function pruneOffline() {
+    if (!navigator.onLine || isDemo()) return;
+    try {
+      const removed = await pruneDeleted(async (ids) => {
+        try {
+          const data = await api.audioLite(ids);
+          return new Set((data.items || []).map((item) => Number(item.id)));
+        } catch {
+          return null;
+        }
+      });
+      if (removed && parts()[0] === "likes") route();
+    } catch {
+      /* IndexedDB no disponible */
+    }
   }
 
   async function loadMe() {
@@ -1729,6 +1946,8 @@ export function createUI(player) {
       return show(() => renderSearch(query));
     }
     if (name === "library") return show(renderLibrary);
+    if (name === "shared") return show(renderShared);
+    if (name === "s" && arg) return show(() => renderShare(arg)).then(() => paintSide().catch(() => {}));
     if (name === "uploads") return show(renderUploads);
     if (name === "admin") return isAdmin() ? show(renderAdmin) : show(renderHome);
     if (name === "equipo") {
@@ -2542,7 +2761,8 @@ export function createUI(player) {
       ${remove}
       ${track.source === "user" && canEdit() ? `${item("edit-track", `${EDIT_ICON}Editar canción`)}
       ${item("select-many", "Seleccionar varias")}` : ""}
-      ${track.source === "user" && isAdmin() ? item("delete-upload", "Eliminar archivo") : ""}
+      ${isDemo() ? "" : item("share-track", `${SHARE_ICON}Compartir`)}
+      ${track.source === "user" && track.can_delete ? item("delete-upload", `${TRASH_ICON}Eliminar canción`) : ""}
       <a role="menuitem" href="#/album/${track.album_id}">Ir al álbum</a>
       <a role="menuitem" href="#/artist/${track.artist_id}">Ir al artista</a>`;
     menu.innerHTML = `
@@ -2563,9 +2783,10 @@ export function createUI(player) {
     menu.style.top = `${Math.max(8, top)}px`;
   }
 
-  function openModal({ title, body, confirm, danger, onSubmit, noCancel }) {
+  function openModal({ title, body, confirm, danger, onSubmit, noCancel, cancelLabel }) {
     if (modal.hidden) modalFocus = document.activeElement;
     document.getElementById("modal-cancel").hidden = Boolean(noCancel);
+    document.getElementById("modal-cancel").textContent = cancelLabel || "Cancelar";
     document.getElementById("modal-title").textContent = title;
     document.getElementById("modal-body").innerHTML = body;
     const ok = document.getElementById("modal-ok");
@@ -3127,7 +3348,21 @@ export function createUI(player) {
     }
     if (action === "delete-upload") {
       const track = trackFromRow(target);
-      if (track && isAdmin()) confirmDelete(track);
+      if (track?.can_delete) confirmDelete(track);
+      return;
+    }
+    if (action === "share-album" || action === "share-track") {
+      const kind = action === "share-album" ? "album" : "track";
+      const id = Number(target.dataset.id);
+      const title = kind === "album" ? view.querySelector(".sheet h1")?.textContent.trim() || "Disco" : known.get(id)?.title || "Canción";
+      openShare(kind, id, title);
+      return;
+    }
+    if (action === "share-dismiss") {
+      await api.revokeShare(target.dataset.token);
+      showToast("Quitado de Compartidos conmigo");
+      await show(renderShared);
+      paintSide().catch(() => {});
       return;
     }
     if (action === "admin-act") {
@@ -3383,7 +3618,8 @@ export function createUI(player) {
           },
         }]);
       }
-      if (action === "delete-upload" && isAdmin()) confirmDelete(track);
+      if (action === "delete-upload" && track.can_delete) confirmDelete(track);
+      if (action === "share-track" && !isDemo()) openShare("track", track.id, track.title);
       if (action === "edit-track" && canEdit()) await editTrackForm(track);
       if (action === "select-many" && canEdit()) startSelect(track);
     });
@@ -3704,6 +3940,7 @@ export function createUI(player) {
       .then(() => {
         if (!location.hash) location.hash = "#/";
         else route();
+        pruneOffline();
       })
       .catch((error) => {
         if (error.status === 401) location.assign(error.data?.needs === "setup" ? "/setup" : "/login");

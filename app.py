@@ -29,6 +29,7 @@ import genres
 import localfiles
 import playlistedit
 import radio
+import sharing
 import trackedit
 import uploads
 from config import HOST, PORT, TRUST_PROXY
@@ -712,6 +713,13 @@ def tracks_where(extra_sql="", params=(), order="t.id", limit=None, offset=None)
 
 def serialize_track(row):
     data = row_dict(row)
+    uploaded_by = data.pop("uploaded_by", None)
+    viewer = g.user["id"] if g.get("user") else None
+    # «mine»: la subió esta cuenta. «can_delete» solo adelanta lo que el servidor vuelve a exigir al borrar.
+    data["mine"] = uploaded_by is not None and uploaded_by == viewer
+    data["can_delete"] = bool(
+        data.get("source") == "user" and not is_demo() and (is_admin() or data["mine"])
+    )
     data["liked"] = bool(data.pop("liked"))
     data["audio_url"] = f"/static/audio/{data['audio_file']}"
     data["cover_url"] = f"/static/covers/{data['cover']}"
@@ -1478,13 +1486,13 @@ def equipo_image():
     return send_file(path, mimetype=mime, conditional=True, max_age=3600)
 
 
-# ---------- subidas: ver es para todos; subir y eliminar, solo administradores ----------
+# ---------- subidas: ver es para todos; subir, cualquier cuenta (menos la demo); eliminar, solo lo que subió cada una (el administrador, todo) ----------
 
 # Campos que necesita el reproductor y las listas; «lite» omite el resto (slug, portada interna, colores...).
 LITE_TRACK_FIELDS = (
     "id", "title", "artist", "artist_id", "album", "album_id", "duration_ms", "audio_url",
     "cover_url", "liked", "song_key", "source", "genre", "bpm", "musical_key",
-    "lite_url", "lite_size", "lite_codec", "original_size",
+    "lite_url", "lite_size", "lite_codec", "original_size", "mine", "can_delete",
 )
 UPLOADS_MAX_PAGE = 5000
 
@@ -1532,21 +1540,139 @@ def upload_track():
     if storage is None or not storage.filename:
         return fail("Falta el archivo.")
     try:
-        track_id = uploads.store_upload(get_db(), storage)
+        track_id = uploads.store_upload(get_db(), storage, uploaded_by=uid())
     except uploads.UploadError as exc:
         return fail(exc.message, exc.code, **exc.extra)
     found = tracks_where("WHERE t.id = %s", (track_id,))
     return jsonify(found[0] if found else {"id": track_id}), 201
 
 
+DELETE_PER_WINDOW = 30
+DELETE_WINDOW = 60
+
+
 @app.delete("/api/tracks/<int:track_id>")
-@require_admin
 def delete_track(track_id):
+    """Borra (a la papelera) una canción subida. La cuenta demo nunca; cada cuenta solo las suyas; el administrador, todas.
+
+    La propiedad se comprueba en el servidor (uploads.can_delete) y no en lo que muestre la pantalla.
+    """
+    if is_demo():
+        return fail(DEMO_FORBIDDEN, 403)
+    key = ("track-delete", uid())
+    if accounts.limiter.count(key, DELETE_WINDOW) >= DELETE_PER_WINDOW:
+        return fail(ERROR_TEXT[429], 429)
+    accounts.limiter.hit(key, DELETE_WINDOW)
     try:
-        uploads.delete_upload(get_db(), track_id)
+        result = uploads.delete_upload(get_db(), track_id, actor_id=uid(), is_admin=is_admin(), actor_name=g.user["username"])
     except uploads.UploadError as exc:
+        if exc.code == 403:
+            log.warning("Borrado denegado: %s intentó eliminar la canción %s", g.user["username"], track_id)
+        return fail(exc.message, exc.code)
+    log.info("%s eliminó la canción %s (papelera: %s)", actor_label() if can_edit_tracks() else f"Cuenta {g.user['username']} (id {uid()})", track_id, result.get("trash"))
+    return jsonify(ok=True, id=track_id)
+
+
+# ---------- compartir: enlaces /s/<token> (exigen sesión) y «Compartidos conmigo» ----------
+
+def share_payload(share):
+    return {
+        "token": share["token"],
+        "kind": share["kind"],
+        "id": share["target_id"],
+        "path": f"/s/{share['token']}",
+        "to_user_id": share["to_user_id"],
+    }
+
+
+@app.post("/api/shares")
+def create_share():
+    """Crea un enlace para una canción o disco; con «to» (nombre de usuario) lo envía además a esa cuenta."""
+    if is_demo():
+        return fail(DEMO_FORBIDDEN, 403)
+    body = request.get_json(silent=True)
+    if not isinstance(body, dict):
+        return fail("Petición no válida.")
+    key = ("share-create", uid())
+    if accounts.limiter.count(key, sharing.SHARES_WINDOW) >= sharing.SHARES_PER_WINDOW:
+        return fail(ERROR_TEXT[429], 429)
+    accounts.limiter.hit(key, sharing.SHARES_WINDOW)
+    db = get_db()
+    try:
+        kind = sharing.clean_kind(body.get("kind"))
+        target_id = sharing.clean_id(body.get("id"))
+        recipient = None
+        if body.get("to") not in (None, ""):
+            recipient = sharing.find_recipient(db, str(body.get("to"))[:64], uid())
+        share = sharing.create(db, uid(), kind, target_id, recipient["id"] if recipient else None)
+    except sharing.ShareError as exc:
+        return fail(exc.message, exc.code)
+    payload = share_payload(share)
+    if recipient:
+        payload["to"] = {"username": recipient["username"], "display_name": recipient["display_name"] or recipient["username"]}
+        log.info("%s compartió %s %s con %s", g.user["username"], kind, target_id, recipient["username"])
+    return jsonify(payload), 201
+
+
+@app.get("/api/shares/inbox")
+def shares_inbox():
+    db = get_db()
+    return jsonify(items=sharing.inbox(db, uid()), unseen=sharing.unseen_count(db, uid()))
+
+
+@app.get("/api/shares/<token>")
+def get_share(token):
+    """Resuelve un enlace: la canción o el disco (con sus pistas) y quién lo compartió."""
+    db = get_db()
+    share = sharing.get(db, token)
+    if not share:
+        return fail("Este enlace ya no existe.", 404)
+    sharing.mark_seen(db, share, uid())
+    owner = {"username": share["owner_username"], "display_name": share["owner_name"] or share["owner_username"]}
+    out = {"token": share["token"], "kind": share["kind"], "from": owner, "mine": share["owner_id"] == uid()}
+    if share["kind"] == "track":
+        found = tracks_where("WHERE t.id = %s", (share["target_id"],))
+        if not found:
+            return fail("Este enlace ya no existe.", 404)
+        out["track"] = found[0]
+    else:
+        with db.cursor() as cur:
+            cur.execute(
+                """
+                SELECT al.*, a.name AS artist, a.id AS artist_id, a.origin
+                FROM albums al JOIN artists a ON a.id = al.artist_id WHERE al.id = %s
+                """,
+                (share["target_id"],),
+            )
+            row = cur.fetchone()
+        if not row:
+            return fail("Este enlace ya no existe.", 404)
+        album = row_dict(row)
+        album["cover_url"] = f"/static/covers/{album['cover_file']}"
+        album["tracks"] = tracks_where("WHERE t.album_id = %s", (share["target_id"],), order="t.track_number")
+        album["duration_ms"] = sum(track["duration_ms"] for track in album["tracks"])
+        out["album"] = album
+    return jsonify(out)
+
+
+@app.delete("/api/shares/<token>")
+def delete_share(token):
+    try:
+        sharing.revoke(get_db(), token, uid(), is_admin())
+    except sharing.ShareError as exc:
         return fail(exc.message, exc.code)
     return jsonify(ok=True)
+
+
+@app.get("/s/<token>")
+def share_page(token):
+    """Enlace compartido: exige sesión (el filtro de arriba manda a /login y vuelve aquí) y abre la vista dentro de la app."""
+    share = sharing.get(get_db(), token)
+    if not share:
+        response = app.make_response((render_template("auth.html", mode="error", code=404, message="Este enlace ya no existe o lo compartido se eliminó."), 404))
+        response.headers["Cache-Control"] = "no-store"
+        return response
+    return no_store_redirect(f"/#/s/{share['token']}")
 
 
 # ---------- edición de canciones: administradores y cuentas con permiso (cambia la base de datos, no los archivos) ----------

@@ -237,7 +237,7 @@ check("editor: carpeta del servidor (solo admin) -> 403", st == 403, st)
 st, h, body = editor.raw("GET", "/")
 st2, h2, body2 = editor.raw("GET", "/static/js/ui.js?v=x")
 js = body2.decode("utf-8", "replace")
-check("ui.js: menú Editar para canEdit(); «Eliminar archivo» solo para isAdmin()", 'track.source === "user" && canEdit() ? `${item("edit-track"' in js and 'track.source === "user" && isAdmin() ? item("delete-upload"' in js, "")
+check("ui.js: menú Editar para canEdit(); «Eliminar canción» solo si el servidor marca can_delete (admin o quien la subió)", 'track.source === "user" && canEdit() ? `${item("edit-track"' in js and 'track.source === "user" && track.can_delete ? item("delete-upload"' in js, "")
 check("ui.js: botón «Editar varias» en Subir según can_edit (no solo admin)", "upl.can_edit = Boolean(first.can_edit" in js and "${upl.can_edit && count ?" in js, "")
 check("ui.js: interruptor «Puede editar canciones» en Cuentas", "data-perm-edit" in js and "grant-edit" in js and "revoke-edit" in js, "")
 

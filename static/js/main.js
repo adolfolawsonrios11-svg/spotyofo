@@ -1,6 +1,6 @@
-import { createPlayer } from "./player.js?v=20261105a";
-import { createUI } from "./ui.js?v=20261105a";
-import { bindThemeToggle } from "./theme.js?v=20261105a";
+import { createPlayer } from "./player.js?v=20261125a";
+import { createUI } from "./ui.js?v=20261125a";
+import { bindThemeToggle } from "./theme.js?v=20261125a";
 
 const player = createPlayer();
 const ui = createUI(player);

@@ -47,7 +47,7 @@ check("index carga theme-boot antes del CSS", bool(re.search(r'theme-boot\.js.*\
 check("index tiene boton data-theme-toggle", 'data-theme-toggle' in index and "icon-sun" in index and "icon-moon" in index)
 check("auth tiene boot + toggle + script classic", "theme-boot.js" in auth and "theme-toggle.js" in auth and "data-theme-toggle" in auth)
 check("main.js importa bindThemeToggle", "bindThemeToggle" in main and "theme.js" in main)
-check("assets version bump 20261105a en main", "20261105a" in main)
+check("assets version bump 20261125a en main", "20261125a" in main)
 check("sin script inline de tema en index (CSP)", "<script>try" not in index and "localStorage.getItem" not in index)
 
 # contraste basico: texto claro vs fondo oscuro y viceversa (hex presentes)

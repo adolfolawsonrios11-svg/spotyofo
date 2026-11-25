@@ -55,8 +55,10 @@ CREATE TABLE IF NOT EXISTS tracks (
   original_name VARCHAR(255) NULL,
   file_size INT UNSIGNED NULL,
   uploaded_at TIMESTAMP NULL DEFAULT NULL,
+  uploaded_by INT NULL DEFAULT NULL,
   UNIQUE KEY uq_tracks_hash (file_hash),
   KEY idx_tracks_source (source),
+  KEY idx_tracks_uploader (uploaded_by),
   KEY idx_tracks_genre (genre),
   KEY idx_tracks_plays (plays),
   CONSTRAINT fk_tracks_album FOREIGN KEY (album_id) REFERENCES albums(id),
@@ -160,6 +162,23 @@ CREATE TABLE IF NOT EXISTS user_device_likes (
   CONSTRAINT fk_udl_track FOREIGN KEY (track_id) REFERENCES device_tracks(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE IF NOT EXISTS shares (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  token CHAR(22) NOT NULL,
+  kind ENUM('track','album') NOT NULL,
+  target_id INT NOT NULL,
+  owner_id INT NOT NULL,
+  to_user_id INT NULL DEFAULT NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  seen_at TIMESTAMP NULL DEFAULT NULL,
+  UNIQUE KEY uq_shares_token (token),
+  KEY idx_shares_target (kind, target_id),
+  KEY idx_shares_to (to_user_id, created_at),
+  KEY idx_shares_owner (owner_id),
+  CONSTRAINT fk_shares_owner FOREIGN KEY (owner_id) REFERENCES users(id) ON DELETE CASCADE,
+  CONSTRAINT fk_shares_to FOREIGN KEY (to_user_id) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 CREATE TABLE IF NOT EXISTS app_meta (
   meta_key VARCHAR(64) NOT NULL PRIMARY KEY,
   meta_value VARCHAR(255) NOT NULL,
@@ -200,7 +219,7 @@ CREATE TABLE IF NOT EXISTS radio_favorites (
 TRACK_SQL = """
 SELECT
   t.id, t.slug, t.title, t.track_number, t.duration_ms, t.audio_file, t.genre,
-  t.bpm, t.musical_key, t.plays, t.album_id, t.artist_id, t.source,
+  t.bpm, t.musical_key, t.plays, t.album_id, t.artist_id, t.source, t.uploaded_by,
   a.name AS artist, a.slug AS artist_slug,
   al.title AS album, al.slug AS album_slug, al.cover_file AS cover, al.year AS year,
   al.accent_a, al.accent_b,
@@ -227,12 +246,15 @@ MIGRATION_COLUMNS = [
     ("users", "is_demo", "ALTER TABLE users ADD COLUMN is_demo TINYINT(1) NOT NULL DEFAULT 0"),
     # Permiso para editar canciones subidas sin ser administrador (solo lo da o quita un administrador).
     ("users", "can_edit", "ALTER TABLE users ADD COLUMN can_edit TINYINT(1) NOT NULL DEFAULT 0"),
+    # Quién subió cada canción (NULL = anterior a este campo o del catálogo: solo el administrador puede borrarla).
+    ("tracks", "uploaded_by", "ALTER TABLE tracks ADD COLUMN uploaded_by INT NULL DEFAULT NULL"),
 ]
 MIGRATION_INDEXES = [
     ("tracks", "uq_tracks_hash", "ALTER TABLE tracks ADD UNIQUE KEY uq_tracks_hash (file_hash)"),
     ("tracks", "idx_tracks_source", "ALTER TABLE tracks ADD KEY idx_tracks_source (source)"),
     ("playlists", "idx_playlists_owner", "ALTER TABLE playlists ADD KEY idx_playlists_owner (owner_id)"),
     ("play_history", "idx_history_user", "ALTER TABLE play_history ADD KEY idx_history_user (user_id, played_at)"),
+    ("tracks", "idx_tracks_uploader", "ALTER TABLE tracks ADD KEY idx_tracks_uploader (uploaded_by)"),
 ]
 _migrate_lock = threading.Lock()
 _migrated = False

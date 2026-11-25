@@ -2163,3 +2163,63 @@ html[data-theme="light"] .theme-toggle .icon-moon {
   .topbar .theme-toggle { display: inline-grid; }
 }
 
+
+/* ---------- Compartir (enlaces /s/<token>, Compartidos conmigo) y borrar las canciones propias ---------- */
+.btn.share-btn, .share-native { display: inline-flex; align-items: center; gap: 8px; }
+.btn.share-btn svg, .share-native svg, .dot.share svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; flex: none; }
+.share-title { margin: 0 0 4px; font-weight: 700; overflow-wrap: anywhere; }
+.share-note { margin: 0 0 14px; color: var(--muted); font-size: 13px; }
+.share-link { text-overflow: ellipsis; }
+.share-native { width: 100%; justify-content: center; margin: 0 0 14px; }
+.share-to { display: flex; gap: 8px; }
+.share-to input { flex: 1; min-width: 0; }
+.share-status { min-height: 1.3em; margin: 0 0 10px; font-size: 13px; color: var(--muted); }
+.share-status.is-error { color: var(--danger); }
+.share-revoke { width: 100%; justify-content: center; margin-bottom: 12px; }
+.dot.share { display: grid; place-items: center; background: linear-gradient(145deg, #5f87c9, #a9d4ff); color: #08162e; }
+.side-badge {
+  margin-left: auto;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: 999px;
+  display: grid;
+  place-items: center;
+  background: var(--aqua);
+  color: var(--aqua-ink);
+  font-size: 12px;
+  font-weight: 800;
+}
+body.side-collapsed .side-badge { display: none; }
+.lib-card.shared { background: linear-gradient(145deg, #5f87c9, #a9d4ff); color: #08162e; }
+.share-list { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; }
+.share-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px 8px 8px;
+  border-radius: 14px;
+  background: var(--elev);
+  border: 1px solid var(--line);
+}
+.share-row.is-new { border-color: var(--aqua); }
+.share-open { display: flex; align-items: center; gap: 12px; flex: 1; min-width: 0; color: var(--text); }
+.share-open img { width: 52px; height: 52px; border-radius: 8px; object-fit: cover; flex: none; background: var(--elev-2); }
+.share-main { display: flex; flex-direction: column; min-width: 0; gap: 2px; }
+.share-main strong, .share-main small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.share-main small { color: var(--muted); font-size: 12.5px; }
+.share-new {
+  margin-left: auto;
+  flex: none;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--aqua);
+  color: var(--aqua-ink);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+@media (max-width: 720px) {
+  .share-main small { white-space: normal; }
+}

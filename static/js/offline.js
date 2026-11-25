@@ -160,6 +160,25 @@ export async function downloadTrack(track, { demo = false, onProgress } = {}) {
   return row;
 }
 
+// Quita las descargas de canciones que ya no existen en el servidor (las eliminó su dueña o el administrador).
+// fetchLiveIds(ids) devuelve un Set con los ids que siguen existiendo, o null si no se pudo preguntar (sin red: no se toca nada).
+export async function pruneDeleted(fetchLiveIds) {
+  const rows = await allMeta();
+  let removed = 0;
+  for (let i = 0; i < rows.length; i += 100) {
+    const chunk = rows.slice(i, i + 100);
+    const live = await fetchLiveIds(chunk.map((row) => row.id));
+    if (!live) return removed;
+    for (const row of chunk) {
+      if (!live.has(Number(row.id))) {
+        await removeDownload(row.id);
+        removed += 1;
+      }
+    }
+  }
+  return removed;
+}
+
 export async function removeDownload(id) {
   const row = await getMeta(id);
   if (row?.url && "caches" in window) {
