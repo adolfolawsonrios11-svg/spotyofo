@@ -1,4 +1,4 @@
-"""Pruebas de la cuenta demo de SpotyOFO (solo biblioteca estándar).
+"""Pruebas de la cuenta demo de OFO Music (solo biblioteca estándar).
 
 Uso (con la app corriendo y la demo creada con «python manage.py demo-reset»):
   set SPOTY_DEMO_PASSWORD=...        (o en .env)

@@ -1,4 +1,4 @@
-/* SpotyOFO theme boot: corre antes del CSS para evitar flash.
+/* OFO Music theme boot: corre antes del CSS para evitar flash.
  * Lee localStorage spotyofo-theme (light|dark) o prefers-color-scheme.
  */
 (function () {

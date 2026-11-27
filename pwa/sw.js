@@ -1,4 +1,4 @@
-﻿/* SpotyOFO service worker. La versión la inyecta Flask al servir /sw.js.
+﻿/* OFO Music service worker. La versión la inyecta Flask al servir /sw.js.
  * Cuentas: las respuestas de la API (datos de cada usuario) NUNCA se guardan en caché,
  * y al cerrar sesión se borran todas las cachés de este sitio.
  * Audio offline: la caché spotyofo-offline-audio la llena la app (Me gusta → Descargar).

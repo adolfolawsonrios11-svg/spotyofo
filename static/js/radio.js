@@ -1,7 +1,7 @@
 // Radio en vivo: Nacional (Chile por región), Latinoamérica (por país), Mundial y Mis radios.
-// Los datos vienen de /api/radio/* (proxy con caché de SpotyOFO hacia Radio Browser); el audio
+// Los datos vienen de /api/radio/* (proxy con caché de OFO Music hacia Radio Browser); el audio
 // lo abre el reproductor directo desde cada emisora (solo https, sin HLS).
-import { api } from "./api.js?v=20261125a";
+import { api } from "./api.js?v=20261127a";
 
 const TABS = [
   ["nacional", "Nacional"],

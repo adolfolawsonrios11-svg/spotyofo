@@ -1,5 +1,5 @@
 # Desarrollo: este PC, http://127.0.0.1:5050
-# Producción: ofoserv, https://spotyofo.ofotech.cl
+# Producción: ofoserv, https://music.ofotech.cl (también https://spotyofo.ofotech.cl, host antiguo)
 param(
     [switch]$SkipPush
 )

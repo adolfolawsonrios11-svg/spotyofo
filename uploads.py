@@ -546,7 +546,7 @@ def find_or_create_artist(cur, name, genre):
             name,
             genre,
             "Tus archivos",
-            "Música que subiste a SpotyOFO desde tus archivos.",
+            "Música que subiste a OFO Music desde tus archivos.",
             accent_a,
             accent_b,
             "pending.svg",

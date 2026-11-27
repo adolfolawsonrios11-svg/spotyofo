@@ -1,4 +1,4 @@
-﻿/* SpotyOFO: descargas offline de Me gusta (Cache Storage + IndexedDB).
+﻿/* OFO Music: descargas offline de Me gusta (Cache Storage + IndexedDB).
  * La cuenta demo no puede descargar (misma idea que Mis radios).
  * Al cerrar sesión el service worker borra las cachés; aquí también limpiamos el índice. */
 const DB_NAME = "spotyofo-offline";

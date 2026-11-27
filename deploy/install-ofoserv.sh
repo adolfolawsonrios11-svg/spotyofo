@@ -5,7 +5,8 @@ export DEBIAN_FRONTEND=noninteractive
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 ENV_FILE=/etc/spotyofo.env
-HOST_NAME=spotyofo.ofotech.cl
+HOST_NAME=music.ofotech.cl
+LEGACY_HOST=spotyofo.ofotech.cl
 cd "$ROOT"
 
 sudo apt-get update -qq
@@ -29,6 +30,8 @@ SPOTY_DB_NAME=spotyofo
 SPOTY_HOST=127.0.0.1
 SPOTY_PORT=5050
 SPOTY_TRUST_PROXY=1
+SPOTY_CANONICAL_HOST=${HOST_NAME}
+SPOTY_LEGACY_HOSTS=${LEGACY_HOST}
 EOF
   sudo chown root:ofo "$ENV_FILE"
   sudo chmod 640 "$ENV_FILE"
@@ -59,4 +62,4 @@ for _ in 1 2 3 4 5 6 7 8 9 10; do
   sleep 1
 done
 curl -fsS http://127.0.0.1:5050/api/health >/dev/null
-echo "SpotyOFO en https://${HOST_NAME} (túnel propio cloudflared-spotyofo, sin tocar el túnel compartido)"
+echo "OFO Music en https://${HOST_NAME} y https://${LEGACY_HOST} (túnel propio cloudflared-spotyofo, sin tocar el túnel compartido)"

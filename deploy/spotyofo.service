@@ -1,5 +1,5 @@
 [Unit]
-Description=SpotyOFO
+Description=OFO Music
 After=network.target mariadb.service
 Wants=mariadb.service
 

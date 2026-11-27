@@ -1,4 +1,4 @@
-import { api } from "./api.js?v=20261125a";
+import { api } from "./api.js?v=20261127a";
 
 export const EQ_FREQS = [31, 62, 125, 250, 500, 1000, 2000, 4000, 8000, 16000];
 export const EQ_LABELS = ["31", "62", "125", "250", "500", "1k", "2k", "4k", "8k", "16k"];
@@ -1307,7 +1307,7 @@ export function createPlayer() {
       navigator.mediaSession.metadata = new MediaMetadata({
         title: station.name || "Radio",
         artist: `EN VIVO${station.country ? ` · ${station.country}` : ""}`,
-        album: "Radio · SpotyOFO",
+        album: "Radio · OFO Music",
         artwork: art,
       });
     } catch {

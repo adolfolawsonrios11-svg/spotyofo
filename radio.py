@@ -1,6 +1,6 @@
 """Radio en vivo: proxy con caché hacia la API pública de Radio Browser (radio-browser.info).
 
-- El navegador nunca habla con Radio Browser: pide /api/radio/* a SpotyOFO y el servidor
+- El navegador nunca habla con Radio Browser: pide /api/radio/* a OFO Music y el servidor
   responde desde una caché en memoria (6 h) para no saturar la API ni el único worker.
 - El audio NO pasa por el servidor: el reproductor abre directamente el stream https
   (url_resolved) de cada emisora. Solo se ofrecen streams https (sin contenido mixto) y sin HLS.
@@ -25,7 +25,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 log = logging.getLogger("spotyofo.radio")
 
-USER_AGENT = "SpotyOFO/1.0"
+USER_AGENT = "OFOMusic/1.0"
 TTL = int(os.environ.get("SPOTY_RADIO_TTL", str(6 * 3600)))
 STALE_RETRY = 300          # tras un fallo, la copia vencida se reutiliza 5 min antes de reintentar
 NEGATIVE_TTL = 60          # un fallo sin copia se recuerda 1 min (no martillar una API caída)

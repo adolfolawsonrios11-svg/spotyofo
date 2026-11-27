@@ -15,7 +15,7 @@
     "closed": "Registro cerrado",
     "error": "Algo salió mal",
   } %}
-  <title>{{ titles.get(mode, "SpotyOFO") }} · SpotyOFO</title>
+  <title>{{ titles.get(mode, "OFO Music") }} · OFO Music</title>
   <link rel="manifest" href="/manifest.webmanifest">
   <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="/static/icons/apple-touch-icon.png" sizes="180x180">
@@ -32,11 +32,11 @@
 </button></div>
   <main class="auth" id="main">
     <div class="auth-card">
-      <a class="auth-brand" href="/" aria-label="SpotyOFO, inicio">
+      <a class="auth-brand" href="/" aria-label="OFO Music, inicio">
         <span class="mark" aria-hidden="true"></span>
-        <span>SpotyOFO</span>
+        <span>OFO Music</span>
       </a>
-      <h1>{{ titles.get(mode, "SpotyOFO") }}</h1>
+      <h1>{{ titles.get(mode, "OFO Music") }}</h1>
 
       {% if error %}<p class="auth-msg is-error" role="alert" id="form-error">{{ error }}</p>{% endif %}
       {% if notice %}<p class="auth-msg is-ok" role="status">{{ notice }}</p>{% endif %}
@@ -91,7 +91,7 @@
         <form method="post" action="/setup" class="auth-form" novalidate {% if error %}aria-describedby="form-error"{% endif %}>
           <input type="hidden" name="csrf_token" value="{{ csrf }}">
           {% if proof == "pin" %}
-            <label for="proof">PIN actual de SpotyOFO</label>
+            <label for="proof">PIN actual de OFO Music</label>
             <input id="proof" name="proof" type="password" inputmode="numeric" autocomplete="off" maxlength="12" aria-describedby="proof-hint" required autofocus>
             <small id="proof-hint">El PIN que usabas para subir canciones. Demuestra que eres el dueño.</small>
           {% else %}

@@ -273,6 +273,17 @@ def connect():
     )
 
 
+BRAND_TEXT_RENAMES = (
+    ("artists", "bio", "Música que subiste a SpotyOFO desde tus archivos.", "Música que subiste a OFO Music desde tus archivos."),
+    (
+        "playlists",
+        "description",
+        "Una muestra para que pruebes SpotyOFO. La cuenta demo se reinicia cada noche.",
+        "Una muestra para que pruebes OFO Music. La cuenta demo se reinicia cada noche.",
+    ),
+)
+
+
 def init_schema(conn):
     with conn.cursor() as cur:
         for statement in SCHEMA.split(";"):
@@ -305,6 +316,10 @@ def migrate(conn):
             for table, index, sql in MIGRATION_INDEXES:
                 if (table, index) not in indexes:
                     cur.execute(sql)
+            # Cambio de nombre SpotyOFO -> OFO Music: textos que quedaron guardados en la base (solo coincidencia exacta,
+            # así no se tocan descripciones que escribió alguien). Idempotente.
+            for table, column, old, new in BRAND_TEXT_RENAMES:
+                cur.execute(f"UPDATE {table} SET {column} = %s WHERE {column} = %s", (new, old))
         _migrated = True
 
 

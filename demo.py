@@ -1,4 +1,4 @@
-"""Cuenta demo de SpotyOFO (portafolio): configuración, alta y reinicio nocturno.
+"""Cuenta demo de OFO Music (portafolio): configuración, alta y reinicio nocturno.
 
 La cuenta demo es una fila normal de users con is_demo = 1, rol «user» y estado «active».
 - app.py le niega (403, en el servidor) cambiar la contraseña y todo lo de administrador.
@@ -25,7 +25,7 @@ DEMO_ENABLED = os.environ.get("SPOTY_DEMO_ENABLED", "0").strip() == "1"
 DEMO_DISPLAY = "Visitante"
 DEMO_MAX_PLAYLISTS = 20
 SEED_PLAYLIST = "Demo – Lo mejor"
-SEED_DESCRIPTION = "Una muestra para que pruebes SpotyOFO. La cuenta demo se reinicia cada noche."
+SEED_DESCRIPTION = "Una muestra para que pruebes OFO Music. La cuenta demo se reinicia cada noche."
 SEED_TRACKS = 10
 SEED_PER_ARTIST = 2
 SEED_LIKES = 5

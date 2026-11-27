@@ -1,4 +1,4 @@
-"""Pruebas de seguridad y cuentas de SpotyOFO (solo biblioteca estándar).
+"""Pruebas de seguridad y cuentas de OFO Music (solo biblioteca estándar).
 
 Uso:
   python tests_sec.py BASE --setup-pin PIN          (sin administrador: prueba /setup y lo crea)

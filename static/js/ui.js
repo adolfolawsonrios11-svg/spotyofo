@@ -1,7 +1,7 @@
-import { api, onSessionExpired, setCsrf } from "./api.js?v=20261125a";
-import { EQ_FREQS, EQ_LABELS, EQ_PRESETS } from "./player.js?v=20261125a";
-import { createRadio } from "./radio.js?v=20261125a";
-import { canPickDirectory, grantDirectory, listDirectory, pickDirectory, rememberFiles, rootStatus, setLikedMany } from "./localdisk.js?v=20261125a";
+import { api, onSessionExpired, setCsrf } from "./api.js?v=20261127a";
+import { EQ_FREQS, EQ_LABELS, EQ_PRESETS } from "./player.js?v=20261127a";
+import { createRadio } from "./radio.js?v=20261127a";
+import { canPickDirectory, grantDirectory, listDirectory, pickDirectory, rememberFiles, rootStatus, setLikedMany } from "./localdisk.js?v=20261127a";
 import {
   clearAll as clearOfflineDownloads,
   dataSaverOn,
@@ -12,7 +12,7 @@ import {
   removeDownload,
   setDataSaver,
   storageSummary,
-} from "./offline.js?v=20261125a";
+} from "./offline.js?v=20261127a";
 
 const known = new Map();
 const UPLOAD_EXT = [".mp3", ".m4a", ".mp4", ".aac", ".flac", ".ogg", ".oga", ".opus", ".wav"];
@@ -735,7 +735,7 @@ export function createUI(player) {
       </div>`).join("");
     return `
       <h1 class="hello">Compartidos conmigo</h1>
-      <p class="lead">Canciones y discos que otras cuentas de SpotyOFO te enviaron. Solo tú ves esta lista.</p>
+      <p class="lead">Canciones y discos que otras cuentas de OFO Music te enviaron. Solo tú ves esta lista.</p>
       ${rows ? `<div class="share-list">${rows}</div>` : `<p class="empty">Todavía no te compartieron nada. Cuando alguien use «Compartir → Enviar a una cuenta» con tu usuario, aparecerá aquí.</p>`}
     `;
   }
@@ -1051,7 +1051,7 @@ export function createUI(player) {
       title: "Editar canción",
       confirm: "Guardar",
       body: `<div class="edit-form">
-        <p class="fine edit-note">Cambia los datos en SpotyOFO. El archivo de audio no se modifica.</p>
+        <p class="fine edit-note">Cambia los datos en OFO Music. El archivo de audio no se modifica.</p>
         <label>Título<input name="title" maxlength="160" required value="${esc(track.title)}"></label>
         <label>Artista<input name="artist" maxlength="120" required value="${esc(track.artist)}"></label>
         <label>Álbum<input name="album" maxlength="160" required value="${esc(track.album)}"></label>
@@ -1263,7 +1263,7 @@ export function createUI(player) {
     const ensureLink = async () => {
       if (share) return url;
       share = await api.createShare({ kind, id });
-      url = `${location.origin}${share.path}`;
+      url = `${share.origin || location.origin}${share.path}`;
       const field = document.querySelector("[data-share-link]");
       if (field) field.value = url;
       document.querySelector("[data-share-revoke]")?.removeAttribute("hidden");
@@ -1281,7 +1281,7 @@ export function createUI(player) {
       cancelLabel: "Cerrar",
       body: `
         <p class="share-title">${esc(title)}</p>
-        <p class="share-note">Solo lo abren cuentas de SpotyOFO con sesión iniciada.</p>
+        <p class="share-note">Solo lo abren cuentas de OFO Music con sesión iniciada.</p>
         <label>Enlace<input class="share-link" data-share-link readonly value="Creando enlace…" aria-live="polite"></label>
         ${native ? `<button type="button" class="btn solid share-native" data-share-native>${SHARE_ICON}<span>Compartir…</span></button>` : ""}
         <label>Enviar a una cuenta
@@ -1307,7 +1307,7 @@ export function createUI(player) {
     body.querySelector("[data-share-native]")?.addEventListener("click", async () => {
       try {
         const link = await ensureLink();
-        await navigator.share({ title: `${title} · SpotyOFO`, text: `Escucha «${title}» en SpotyOFO`, url: link });
+        await navigator.share({ title: `${title} · OFO Music`, text: `Escucha «${title}» en OFO Music`, url: link });
       } catch (error) {
         if (error?.name === "AbortError") return;
         const link = url;
@@ -2067,7 +2067,7 @@ export function createUI(player) {
       nowLike.disabled = true;
       document.getElementById("p-add").disabled = true;
       document.body.classList.remove("has-track");
-      document.title = "SpotyOFO";
+      document.title = "OFO Music";
       return;
     }
     title.textContent = track.title;
@@ -2083,7 +2083,7 @@ export function createUI(player) {
       button.setAttribute("aria-pressed", String(Boolean(track.liked)));
     });
     document.getElementById("np-open").setAttribute("aria-label", `Abrir ahora suena: ${track.title}`);
-    document.title = `${track.title} · ${track.artist} — SpotyOFO`;
+    document.title = `${track.title} · ${track.artist} — OFO Music`;
     const nowTitle = document.getElementById("now-title");
     nowTitle.textContent = track.title;
     document.getElementById("now-artist").textContent = track.artist;
@@ -2130,7 +2130,7 @@ export function createUI(player) {
       badge.dataset.status = radio.status;
     });
     document.getElementById("np-open").setAttribute("aria-label", `Abrir ahora suena: ${station.name}, radio en vivo`);
-    document.title = `${station.name} · ${status} — SpotyOFO`;
+    document.title = `${station.name} · ${status} — OFO Music`;
     document.getElementById("now-title").textContent = station.name;
     document.getElementById("now-artist").textContent = place;
     document.getElementById("now-kicker").textContent = "Radio en vivo";
@@ -2255,7 +2255,7 @@ export function createUI(player) {
       </div>`).join("");
     const outputBlock = caps.sink
       ? `<div class="set-row">
-          <span class="set-text"><strong>Salida de audio</strong><small>Parlantes, audífonos o interfaz donde suena SpotyOFO.</small></span>
+          <span class="set-text"><strong>Salida de audio</strong><small>Parlantes, audífonos o interfaz donde suena OFO Music.</small></span>
           <div class="set-control">
             <select id="audio-output" aria-label="Dispositivo de salida"><option value="">Predeterminada del sistema</option></select>
             <button type="button" class="btn ghost small" data-audio="output-access">${caps.selectOutput ? "Elegir…" : "Mostrar nombres"}</button>
@@ -3915,7 +3915,7 @@ export function createUI(player) {
     window.addEventListener("appinstalled", () => {
       installPrompt = null;
       showInstall(false);
-      showToast("SpotyOFO quedó instalada");
+      showToast("OFO Music quedó instalada");
     });
     userMenu.addEventListener("click", (event) => {
       if (event.target.closest("#user-install")) {

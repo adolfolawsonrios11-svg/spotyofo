@@ -2223,3 +2223,6 @@ body.side-collapsed .side-badge { display: none; }
 @media (max-width: 720px) {
   .share-main small { white-space: normal; }
 }
+
+/* OFO Music: el nombre es más largo que el anterior; una sola línea y un punto menos de tamaño en el menú lateral. */
+.brand-name { white-space: nowrap; font-size: 18px; letter-spacing: -0.03em; }

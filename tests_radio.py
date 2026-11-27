@@ -292,7 +292,7 @@ try:
     check("meta: países y etiquetas desde Radio Browser", any(c["code"] == "DE" for c in meta.get("countries", [])) and any(t["name"] == "pop" for t in meta.get("tags", [])), "")
     genres = {g["key"]: g for g in meta.get("genres", [])}
     check("meta: géneros curados con conteo en Chile (noticias=3)", genres.get("noticias", {}).get("stations_cl") == 3, genres.get("noticias"))
-    check("User-Agent SpotyOFO/1.0 hacia Radio Browser", all(q.get("_ua") == "SpotyOFO/1.0" for _, q in Mock.hits) and Mock.hits, Mock.hits[:2])
+    check("User-Agent OFOMusic/1.0 hacia Radio Browser", all(q.get("_ua") == "OFOMusic/1.0" for _, q in Mock.hits) and Mock.hits, Mock.hits[:2])
 
     # ---------- nacional ----------
     bulk_before = Mock.count("/json/stations/search", countrycode="CL")

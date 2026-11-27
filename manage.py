@@ -1,4 +1,4 @@
-"""Administración de SpotyOFO por consola (no importa la app web ni escribe archivos de ella).
+"""Administración de OFO Music por consola (no importa la app web ni escribe archivos de ella).
 
 Uso en el servidor (ofoserv), como el usuario del servicio:
 
@@ -48,7 +48,7 @@ def find(conn, username):
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description="Cuentas de SpotyOFO")
+    parser = argparse.ArgumentParser(description="Cuentas de OFO Music")
     parser.add_argument("command", choices=["list-users", "reset-password", "create-admin", "make-admin", "demo-reset", "trash-list", "trash-restore", "assign-uploads"])
     parser.add_argument("username", nargs="?")
     parser.add_argument("--password-stdin", action="store_true")

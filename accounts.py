@@ -1,4 +1,4 @@
-"""Cuentas de SpotyOFO: registro con aprobación del administrador, contraseñas y bloqueos.
+"""Cuentas de OFO Music: registro con aprobación del administrador, contraseñas y bloqueos.
 
 - Las contraseñas se guardan solo como hash (werkzeug, scrypt con sal).
 - Registro propio -> cuenta «pending». Solo un administrador la aprueba.

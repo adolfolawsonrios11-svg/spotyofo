@@ -1,4 +1,4 @@
-"""SpotyOFO: reproductor con cuentas propias aprobadas por el administrador."""
+"""OFO Music: reproductor con cuentas propias aprobadas por el administrador."""
 
 import gzip
 import hmac
@@ -32,7 +32,7 @@ import radio
 import sharing
 import trackedit
 import uploads
-from config import HOST, PORT, TRUST_PROXY
+from config import CANONICAL_HOST, CANONICAL_SCHEME, HOST, LEGACY_HOSTS, LEGACY_REDIRECT, PORT, TRUST_PROXY
 from db import TRACK_SQL, connect, init_schema, row_dict
 from songs import song_key
 
@@ -278,6 +278,33 @@ def actor_label():
 DEMO_FORBIDDEN = "La cuenta demo no puede hacer esto."
 DEMO_LOGIN_PER_IP = 30
 DEMO_LOGIN_WINDOW = 15 * 60
+
+
+# Host antiguo -> canónico (301). Solo páginas (GET/HEAD): la API, los estáticos y lo que necesitan las apps ya instaladas
+# (service worker, manifest, assetlinks, health) siguen respondiendo en el host antiguo para no romperlas. El token de un
+# enlace /s/<token> y la query se conservan.
+LEGACY_KEEP_EXACT = {"/api/health", "/.well-known/assetlinks.json", "/sw.js", "/manifest.webmanifest", "/favicon.ico", "/robots.txt"}
+LEGACY_KEEP_PREFIX = ("/api/", "/static/")
+
+
+@app.before_request
+def legacy_host_redirect():
+    if not LEGACY_REDIRECT or request.method not in ("GET", "HEAD"):
+        return None
+    host = request.host.split(":")[0].lower()
+    if host not in LEGACY_HOSTS:
+        return None
+    path = request.path
+    if path in LEGACY_KEEP_EXACT or path.startswith(LEGACY_KEEP_PREFIX):
+        return None
+    query = request.query_string.decode("latin-1")
+    target = f"{CANONICAL_SCHEME}://{CANONICAL_HOST}{path}" + (f"?{query}" if query else "")
+    return redirect(target, 301)  # security_headers le pone Cache-Control: no-store: se puede revertir sin cachés viejas
+
+
+def share_origin():
+    """Origen de los enlaces nuevos: el canónico si está configurado; vacío = el mismo desde donde se pidió."""
+    return f"{CANONICAL_SCHEME}://{CANONICAL_HOST}" if CANONICAL_HOST else ""
 
 
 @app.before_request
@@ -1581,6 +1608,7 @@ def share_payload(share):
         "kind": share["kind"],
         "id": share["target_id"],
         "path": f"/s/{share['token']}",
+        "origin": share_origin(),
         "to_user_id": share["to_user_id"],
     }
 
@@ -1875,5 +1903,5 @@ def radio_favorite_remove(uuid):
 
 
 if __name__ == "__main__":
-    print(f"SpotyOFO en http://{HOST}:{PORT}")
+    print(f"OFO Music en http://{HOST}:{PORT}")
     app.run(host=HOST, port=PORT, debug=False, threaded=True)

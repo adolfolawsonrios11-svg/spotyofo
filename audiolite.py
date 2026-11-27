@@ -255,7 +255,7 @@ def report_row(rel: str, info: dict) -> dict:
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description="Genera versiones livianas de audio para SpotyOFO")
+    parser = argparse.ArgumentParser(description="Genera versiones livianas de audio para OFO Music")
     g = parser.add_mutually_exclusive_group(required=True)
     g.add_argument("--sample", type=int, metavar="N", help="Comprime N archivos de muestra")
     g.add_argument("--track", metavar="REL", help="Ruta relativa bajo static/audio/")
